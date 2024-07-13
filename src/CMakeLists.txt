@@ -101,7 +101,7 @@ if(MSVC)
     list(APPEND PROJECT_NAMES pcm-sensor)
 
     # windows/* files -> PCM_STATIC
-    file(GLOB WINDOWS_SOURCES winpmem/winpmem.cpp windows/stdafx.cpp freegetopt/getopt.cpp)
+    file(GLOB WINDOWS_SOURCES dashboard.cpp winpmem/winpmem.cpp windows/stdafx.cpp freegetopt/getopt.cpp)
     add_library(PCM_STATIC STATIC ${COMMON_SOURCES} ${WINDOWS_SOURCES})
     target_compile_definitions(PCM_STATIC PRIVATE UNICODE _UNICODE _CONSOLE)
     if (NO_STATIC_MSVC_RUNTIME_LIBRARY)
