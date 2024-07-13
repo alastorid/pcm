@@ -15,8 +15,6 @@
 #include <iostream>
 #include <thread>
 #include <mutex>
-#include <chrono>
-#include <stdexcept>
 #include "cpucounters.h"
 
 #define DELAY 1 // in seconds
@@ -207,7 +205,7 @@ void * UpdateCounters(void * state)
         s->sstate2 = s->m->getSystemCounterState();
         s->CounterMutex.unlock();
 
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        MySleepMs(1000);
     }
     return NULL;
 }
