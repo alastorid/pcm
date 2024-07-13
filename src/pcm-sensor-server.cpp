@@ -7,20 +7,46 @@ constexpr unsigned int DEFAULT_HTTP_PORT = 9738;
 #if defined (USE_SSL)
 constexpr unsigned int DEFAULT_HTTPS_PORT = DEFAULT_HTTP_PORT;
 #endif
+#ifdef _MSC_VER
+#define _WINSOCKAPI_
+#endif
 #include "pcm-accel-common.h"
 
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifndef _MSC_VER
 #include <unistd.h>
+#endif
 #include<string>
 
 #include <signal.h>
 #include <sys/types.h>
+#ifndef _MSC_VER
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sched.h>
+#else
+#pragma comment(lib, "Ws2_32.lib")
+#include <Winsock2.h>
+#include <WS2tcpip.h>
+#define MSG_NOSIGNAL (0)
+#define close(fd) closesocket(fd)
+#define send(s, buf, len, flags) send(s, (const char*)(buf), len, flags)
+
+static inline size_t read(SOCKET fd, void* buf, size_t count) {
+    int result = recv(fd, (char*)buf, (int)count, 0);
+    if (result == SOCKET_ERROR) {
+        return -1;
+    }
+    return result; 
+}
+
+#undef DELETE
+#undef max
+#undef min
+#endif
 
 #include <cstring>
 #include <fstream>
@@ -225,19 +251,23 @@ public:
     }
 
     void ignoreSignal( int signum ) {
+#ifndef _MSC_VER
         struct sigaction sa;
 	sigemptyset(&sa.sa_mask);
         sa.sa_handler = SIG_IGN;
         sa.sa_flags = 0;
         sigaction( signum, &sa, 0 );
+#endif
     }
 
     void installHandler( void (*handler)(int), int signum ) {
+#ifndef _MSC_VER
         struct sigaction sa;
 	sigemptyset(&sa.sa_mask);
         sa.sa_handler = handler;
         sa.sa_flags = 0;
         sigaction( signum, &sa, 0 );
+#endif
     }
 
     SignalHandler( SignalHandler const & ) = delete;
@@ -295,7 +325,24 @@ public:
             return sycs;
         return std::move( ag->systemCounterState() );
     }
+    
+    template <typename Counter>
+    void printCounter(std::string const& name, Counter c) {
+        if (std::is_same<Counter, std::string>::value || std::is_same<Counter, char const*>::value)
+            ss << indentation << "\"" << name << "\" : \"" << c << "\"," << HTTP_EOL;
+        else
+            ss << indentation << "\"" << name << "\" : " << c << "," << HTTP_EOL;
+    }
 
+    template <typename Vector>
+    void iterateVectorAndCallAccept(Vector const& v) {
+        for (auto* vecElem : v) {
+            // Inside a list objects are not named
+            startObject("", BEGIN_OBJECT);
+            vecElem->accept(*this);
+            endObject(JSONPrinter::DelimiterAndNewLine, END_OBJECT);
+        }
+    };
 
     virtual void dispatch( HyperThread* ht )  override {
         printCounter( "Object", "HyperThread" );
@@ -503,12 +550,6 @@ private:
         }
     }
 
-    template <typename Counter>
-    void printCounter( std::string const & name, Counter c );
-
-    template <typename Vector>
-    void iterateVectorAndCallAccept( Vector const& v );
-
     void startObject(std::string const& s, char const ch ) {
         std::string name;
         if ( s.size() != 0 )
@@ -551,24 +592,6 @@ private:
     const char END_OBJECT = '}';
     const char BEGIN_LIST = '[';
     const char END_LIST = ']';
-};
-
-template <typename Counter>
-void JSONPrinter::printCounter( std::string const & name, Counter c ) {
-    if ( std::is_same<Counter, std::string>::value || std::is_same<Counter, char const*>::value )
-        ss << indentation << "\"" << name << "\" : \"" << c << "\"," << HTTP_EOL;
-    else
-        ss << indentation << "\"" << name << "\" : " << c << "," << HTTP_EOL;
-}
-
-template <typename Vector>
-void JSONPrinter::iterateVectorAndCallAccept(Vector const& v) {
-    for ( auto* vecElem: v ) {
-        // Inside a list objects are not named
-        startObject( "", BEGIN_OBJECT );
-        vecElem->accept( *this );
-        endObject( JSONPrinter::DelimiterAndNewLine, END_OBJECT );
-    }
 };
 
 class PrometheusPrinter : Visitor
@@ -1185,7 +1208,9 @@ public:
         serverSocket_ = initializeServerSocket();
         SignalHandler* shi = SignalHandler::getInstance();
         shi->setSocket( serverSocket_ );
+#ifndef _MSC_VER
         shi->ignoreSignal( SIGPIPE ); // Sorry Dennis Ritchie, we do not care about this, we always check return codes
+#endif
         #ifndef UNIT_TEST // libFuzzer installs own signal handlers
         shi->installHandler( SignalHandler::handleSignal, SIGTERM );
         shi->installHandler( SignalHandler::handleSignal, SIGINT );
@@ -3224,7 +3249,7 @@ void my_get_callback( HTTPServer* hs, HTTPRequest const & req, HTTPResponse & re
     switch ( format ) {
     case JSON:
     {
-        JSONPrinter jp( aggregatorPair );
+        ::JSONPrinter jp( aggregatorPair );
         jp.dispatch( PCM::getInstance()->getSystemTopology() );
         resp.createResponse( ApplicationJSON, jp.str(), RC_200_OK );
         break;
