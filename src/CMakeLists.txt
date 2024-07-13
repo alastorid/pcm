@@ -97,6 +97,8 @@ endif()
 if(MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 /wd4251 /wd4273 /EHa /Zi")
     add_definitions(/W3)
+    list(APPEND PROJECT_NAMES pcm-sensor-server)
+    list(APPEND PROJECT_NAMES pcm-sensor)
 
     # windows/* files -> PCM_STATIC
     file(GLOB WINDOWS_SOURCES winpmem/winpmem.cpp windows/stdafx.cpp freegetopt/getopt.cpp)
