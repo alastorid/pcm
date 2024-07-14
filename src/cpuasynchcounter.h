@@ -12,6 +12,7 @@
 /*!     \file cpuasynchcounter.h
         \brief Implementation of a POSIX thread that periodically saves the current state of counters and exposes them to other threads
 */
+
 #include <thread>
 #include <mutex>
 #include "cpucounters.h"
@@ -70,7 +71,7 @@ public:
     {
         updateThreadPleaseLeave = true;
         UpdateThread.join();
-        // counterMutex deconstructor is called
+        // counterMutex deconstructor will be called
         try {
             m->cleanup();
         } catch (const std::runtime_error & e)
