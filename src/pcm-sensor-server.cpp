@@ -1220,6 +1220,9 @@ public:
         shi->ignoreSignal( SIGPIPE ); // Sorry Dennis Ritchie, we do not care about this, we always check return codes
 #endif
         #ifndef UNIT_TEST // libFuzzer installs own signal handlers
+#ifdef _MSC_VER
+        set_signal_handlers();
+#endif
         shi->installHandler( SignalHandler::handleSignal, SIGTERM );
         shi->installHandler( SignalHandler::handleSignal, SIGINT );
         #endif
