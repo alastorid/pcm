@@ -12,7 +12,6 @@
 /*!     \file cpuasynchcounter.h
         \brief Implementation of a POSIX thread that periodically saves the current state of counters and exposes them to other threads
 */
-#include <iostream>
 #include <thread>
 #include <mutex>
 #include "cpucounters.h"
