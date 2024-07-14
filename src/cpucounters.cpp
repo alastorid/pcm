@@ -141,7 +141,7 @@ static int bitCount(uint64 n)
 }
 */
 
-std::mutex instanceCreationMutex;
+Mutex instanceCreationMutex;
 
 PCM * PCM::getInstance()
 {
@@ -149,7 +149,7 @@ PCM * PCM::getInstance()
     // cppcheck-suppress identicalConditionAfterEarlyExit
     if (instance) return instance;
 
-    std::unique_lock<std::mutex> _(instanceCreationMutex);
+    std::unique_lock<Mutex> _(instanceCreationMutex);
     // cppcheck-suppress identicalConditionAfterEarlyExit
     if (instance) return instance;
 
@@ -5268,7 +5268,7 @@ void PCM::readPerfData(uint32 core, std::vector<uint64> & outData)
             /*
             if (core == 0)
             {
-                std::unique_lock<std::mutex> _(instanceCreationMutex);
+                std::unique_lock<Mutex> _(instanceCreationMutex);
                 std::cerr << "DEBUG: perf raw: " << std::dec;
                 for (uint32 p=0; p < (1 + num_counters) ; ++p) std::cerr << data[p] << " ";
                 std::cerr << "\n";

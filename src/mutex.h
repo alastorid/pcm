@@ -15,7 +15,8 @@ namespace pcm
         Mutex(const Mutex&) = delete;
         Mutex& operator = (const Mutex&) = delete;
 #ifdef _MSC_VER
-        HANDLE mutex_;
+        // mutex on Windows is slow af
+        CRITICAL_SECTION cs_;
 #else
         pthread_mutex_t mutex_;
 #endif
@@ -24,7 +25,7 @@ namespace pcm
         Mutex()
         {
 #ifdef _MSC_VER
-            mutex_ = CreateMutex(NULL, FALSE, NULL);
+            InitializeCriticalSection(&cs_);
 #else
             pthread_mutex_init(&mutex_, NULL);
 #endif
@@ -32,7 +33,7 @@ namespace pcm
         virtual ~Mutex()
         {
 #ifdef _MSC_VER
-            CloseHandle(mutex_);
+            DeleteCriticalSection(&cs_);
 #else
             if (pthread_mutex_destroy(&mutex_) != 0) std::cerr << "pthread_mutex_destroy failed\n";
 #endif
@@ -41,7 +42,7 @@ namespace pcm
         void lock()
         {
 #ifdef _MSC_VER
-            WaitForSingleObject(mutex_, INFINITE);
+            EnterCriticalSection(&cs_);
 #else
             if (pthread_mutex_lock(&mutex_) != 0) std::cerr << "pthread_mutex_lock failed\n";;
 #endif
@@ -49,7 +50,7 @@ namespace pcm
         void unlock()
         {
 #ifdef _MSC_VER
-            ReleaseMutex(mutex_);
+            LeaveCriticalSection(&cs_);
 #else
             if(pthread_mutex_unlock(&mutex_) != 0) std::cerr << "pthread_mutex_unlock failed\n";
 #endif

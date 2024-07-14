@@ -2847,7 +2847,7 @@ private:
 protected:
     std::vector<http_callback>               callbackList_;
     std::vector<std::shared_ptr<Aggregator>> agVector_;
-    std::mutex agVectorMutex_;
+    Mutex agVectorMutex_;
     PeriodicCounterFetcher* pcf_;
 };
 
