@@ -48,6 +48,20 @@ typedef int pid_t;
 #undef DELETE
 #undef max
 #undef min
+// You found me!
+#undef errno
+#define errno (WSAGetLastError())
+#define strerror(x) wsa_strerror(x)
+std::string wsa_strerror(int errCode) {
+    char* s = NULL;
+    FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        NULL, errCode,
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        (LPSTR)&s, 0, NULL);
+    std::string message(s);
+    LocalFree(s);
+    return message;
+}
 #endif
 
 #include <cstring>
@@ -2898,6 +2912,14 @@ void HTTPServer::run() {
         socklen_t sa_len = sizeof( struct sockaddr_in );
         int retval = ::accept( serverSocket_, (struct sockaddr*)&clientAddress, &sa_len );
         if ( -1 == retval ) {
+#ifdef _MSC_VER
+            if (WSANOTINITIALISED == WSAGetLastError()
+                || WSAENOTSOCK == WSAGetLastError()
+                || WSAEINPROGRESS == WSAGetLastError())
+            {
+                break;
+            }
+#endif
             std::cerr << ::strerror( errno ) << "\n";
             continue;
         }
