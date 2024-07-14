@@ -242,7 +242,11 @@ public:
         return &instance;
     }
 
+#ifndef _MSC_VER
     static void handleSignal( int signum );
+#else
+    static void handleSignal();
+#endif
 
     void setSocket( int s ) {
         networkSocket_ = s;
@@ -261,14 +265,16 @@ public:
         sigaction( signum, &sa, 0 );
 #endif
     }
-
-    void installHandler( void (*handler)(int), int signum ) {
 #ifndef _MSC_VER
+    void installHandler( void (*handler)(int), int signum ) {
         struct sigaction sa;
 	sigemptyset(&sa.sa_mask);
         sa.sa_handler = handler;
         sa.sa_flags = 0;
         sigaction( signum, &sa, 0 );
+#else
+    void installHandler(void (*handler)(), int signum) {
+        set_post_cleanup_callback(handler);
 #endif
     }
 
@@ -1227,12 +1233,19 @@ public:
 
 private:
     int initializeServerSocket() {
+#ifdef _MSC_VER
+        WSADATA wsaData = { 0 };
+        auto result = WSAStartup(MAKEWORD(2, 2), &wsaData);
+        if (result != 0) {
+            throw std::runtime_error("WSAStartup failed: " + std::to_string(result));
+        }
+#endif
         if ( port_ == 0 )
             throw std::runtime_error( "Server Constructor: No port specified." );
 
         int sockfd = ::socket( AF_INET, SOCK_STREAM, 0 );
         if ( -1 == sockfd )
-            throw std::runtime_error( "Server Constructor: Can´t create socket" );
+            throw std::runtime_error( "Server Constructor: Can\'t create socket" );
 
         int retval = 0;
 
@@ -2818,10 +2831,16 @@ protected:
 };
 
 // Here to break dependency on HTTPServer
+#ifdef _MSC_VER
+void SignalHandler::handleSignal()
+#else
 void SignalHandler::handleSignal( int signum )
+#endif
 {
     // Clean up, close socket and such
+#ifndef _MSC_VER
     std::cerr << "handleSignal: signal " << signum << " caught.\n";
+#endif
     std::cerr << "handleSignal: closing socket " << networkSocket_ << "\n";
     ::close( networkSocket_ );
     std::cerr << "Stopping HTTPServer\n";
@@ -2829,6 +2848,10 @@ void SignalHandler::handleSignal( int signum )
     std::cerr << "Cleaning up PMU:\n";
     PCM::getInstance()->cleanup();
     std::cerr << "handleSignal: exiting with exit code 1...\n";
+
+#ifdef _MSC_VER
+    WSACleanup();
+#endif
     exit(1);
 }
 
