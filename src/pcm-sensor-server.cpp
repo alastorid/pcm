@@ -42,6 +42,8 @@ static inline size_t read(SOCKET fd, void* buf, size_t count) {
     }
     return result; 
 }
+#define fork() (0)
+typedef int pid_t;
 
 #undef DELETE
 #undef max
@@ -3328,7 +3330,7 @@ void printHelpText( std::string const & programName ) {
     print_help_force_rtm_abort_mode(25, ":");
 }
 
-#if not defined( UNIT_TEST )
+#if !defined( UNIT_TEST ) || defined(_MSC_VER)
 /* Main */
 PCM_MAIN_NOTHROW;
 
@@ -3537,6 +3539,10 @@ int mainThrows(int argc, char * argv[]) {
 
 #ifndef __APPLE__
     if ( useRealtimePriority ) {
+#ifdef _MSC_VER
+        bool silent = false;
+        set_real_time_priority(silent);
+#else
         int priority = sched_get_priority_min( SCHED_RR );
         if ( priority == -1 ) {
             std::cerr << "Could not get SCHED_RR min priority: " << strerror( errno ) << "\n";
@@ -3552,6 +3558,7 @@ int mainThrows(int argc, char * argv[]) {
                 std::cerr << "Scheduler changed to SCHED_RR and priority to " << priority << "\n";
             }
         }
+#endif
     }
 #endif
 
