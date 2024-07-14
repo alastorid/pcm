@@ -1233,19 +1233,23 @@ public:
 
 private:
     int initializeServerSocket() {
+        if ( port_ == 0 )
+            throw std::runtime_error( "Server Constructor: No port specified." );
+
 #ifdef _MSC_VER
         WSADATA wsaData = { 0 };
-        auto result = WSAStartup(MAKEWORD(2, 2), &wsaData);
+        auto result = ::WSAStartup(MAKEWORD(2, 2), &wsaData);
         if (result != 0) {
             throw std::runtime_error("WSAStartup failed: " + std::to_string(result));
         }
 #endif
-        if ( port_ == 0 )
-            throw std::runtime_error( "Server Constructor: No port specified." );
-
         int sockfd = ::socket( AF_INET, SOCK_STREAM, 0 );
         if ( -1 == sockfd )
-            throw std::runtime_error( "Server Constructor: Can\'t create socket" );
+            throw std::runtime_error( "Server Constructor: Can't create socket" 
+#ifdef _MSC_VER
+                 + (" WSAGetLastError=" + std::to_string(WSAGetLastError()))
+#endif
+            );
 
         int retval = 0;
 
