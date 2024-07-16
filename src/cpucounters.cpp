@@ -2897,11 +2897,8 @@ public:
                     condVar.wait(lock);
                 }
                 while (!wQueue.empty()) {
-                    auto work = std::move(wQueue.front()); 
+                    wQueue.front()();
                     wQueue.pop();
-                    lock.unlock();                    
-                    work();
-                    lock.lock();
                 }
             }
         }
