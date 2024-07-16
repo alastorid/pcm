@@ -17,11 +17,20 @@
 
 #define NT_DEVICE_NAME L"\\Driver\\RDMSR"
 #define DOS_DEVICE_NAME L"\\DosDevices\\RDMSR"
-
+#define MSR_MAX_CPU_COUNT (2048)
 struct DeviceExtension
 {
     HANDLE devMemHandle;
     HANDLE counterSetHandle;
+    ULONG processorCount;
+
+    struct _PER_PROCESSOR_DPC_STATE
+    {
+        __declspec(align(8)) 
+        ERESOURCE stateLock;
+        KDPC      dpc;
+        KEVENT    dpcDone;
+    } PerProcessorDpcState[MSR_MAX_CPU_COUNT];
 };
 
 DRIVER_INITIALIZE DriverEntry;
@@ -56,6 +65,8 @@ DriverEntry(
     struct DeviceExtension * pExt = NULL;
     UNICODE_STRING devMemPath;
     OBJECT_ATTRIBUTES attr;
+    ULONG processorCount;
+    ULONG i;
 
     UNREFERENCED_PARAMETER(RegistryPath);
 
@@ -80,12 +91,26 @@ DriverEntry(
     DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = deviceControl;
 
     pExt = DriverObject->DeviceObject->DeviceExtension;
+    processorCount = KeQueryMaximumProcessorCountEx(ALL_PROCESSOR_GROUPS);
+    if (MSR_MAX_CPU_COUNT < processorCount)
+    {
+        // How did you get this much CPU? You must be from Wall street, go fix the macro
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    for (i = 0; i < processorCount; ++i)
+    {
+        ExInitializeResourceLite(&pExt->PerProcessorDpcState[i].stateLock);
+    }
+    pExt->processorCount = processorCount;
+    
     RtlInitUnicodeString(&devMemPath, L"\\Device\\PhysicalMemory");
     InitializeObjectAttributes(&attr, &devMemPath, OBJ_KERNEL_HANDLE, (HANDLE)NULL, (PSECURITY_DESCRIPTOR)NULL);
     status = ZwOpenSection(&pExt->devMemHandle, SECTION_MAP_READ | SECTION_MAP_WRITE, &attr);
     if (!NT_SUCCESS(status))
     {
         DbgPrint("Error: failed ZwOpenSection(devMemHandle) => %08X\n", status);
+        IoDeleteDevice(MSRSystemDeviceObject);
         return status;
     }
     pExt->counterSetHandle = NULL;
@@ -116,15 +141,23 @@ VOID MSRUnload(PDRIVER_OBJECT DriverObject)
 {
     PDEVICE_OBJECT deviceObject = DriverObject->DeviceObject;
     UNICODE_STRING nameString;
+    struct DeviceExtension *pExt;
+    ULONG i;
 
     PAGED_CODE();
 
     RtlInitUnicodeString(&nameString, DOS_DEVICE_NAME);
+        IoDeleteSymbolicLink(&nameString);
 
-    IoDeleteSymbolicLink(&nameString);
 
     if (deviceObject != NULL)
     {
+        pExt = deviceObject->DeviceExtension;
+        for (i = 0; i < pExt->processorCount; ++i)
+        {
+            ExDeleteResourceLite(&pExt->PerProcessorDpcState[i].stateLock);
+        }
+
         IoDeleteDevice(deviceObject);
     }
 }
