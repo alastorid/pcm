@@ -129,6 +129,31 @@ VOID MSRUnload(PDRIVER_OBJECT DriverObject)
     }
 }
 
+int isGoodBuffer(PVOID buffer, SIZE_T size)
+{
+    int good = 0;
+    ULONG_PTR page_address;
+    SIZE_T page_count;
+    volatile char v;
+
+    if (NULL != buffer && 0 != size)
+    {
+        __try
+        {
+            ProbeForRead(buffer, size, 1);
+            page_address = (ULONG_PTR)PAGE_ALIGN(buffer);
+            page_count = BYTES_TO_PAGES(size);
+            while (page_count--)
+            {
+                v = *(volatile char*)(page_address);
+                page_address += PAGE_SIZE;
+            }
+            good = 1;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { }
+    }
+    return good;
+}
 
 NTSTATUS deviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 {
@@ -137,9 +162,9 @@ NTSTATUS deviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
     struct MSR_Request * input_msr_req = NULL;
     struct PCICFG_Request * input_pcicfg_req = NULL;
     struct MMAP_Request* input_mmap_req = NULL;
-    ULONG64 * output = NULL;
+    ULONG64 * output = NULL, *input = NULL;
     GROUP_AFFINITY old_affinity, new_affinity;
-    ULONG inputSize = 0;
+    ULONG inputSize = 0, outputSize = 0;
     PCI_SLOT_NUMBER slot;
     unsigned size = 0;
     PROCESSOR_NUMBER ProcNumber;
@@ -156,15 +181,18 @@ NTSTATUS deviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 
     if (IrpStackLocation)
     {
+        input = IrpStackLocation->Parameters.DeviceIoControl.Type3InputBuffer;
         inputSize = IrpStackLocation->Parameters.DeviceIoControl.InputBufferLength;
+        output = (ULONG64*)Irp->UserBuffer;
+        outputSize = IrpStackLocation->Parameters.DeviceIoControl.OutputBufferLength;
 
-        if (IrpStackLocation->Parameters.DeviceIoControl.OutputBufferLength >=
-            sizeof(ULONG64))
+        if (outputSize >= sizeof(ULONG64)
+            && isGoodBuffer(input, inputSize)
+            && isGoodBuffer(output, outputSize))
         {
-            input_msr_req = (struct MSR_Request *)Irp->AssociatedIrp.SystemBuffer;
-            input_pcicfg_req = (struct PCICFG_Request *)Irp->AssociatedIrp.SystemBuffer;
-            input_mmap_req = (struct MMAP_Request*)Irp->AssociatedIrp.SystemBuffer;
-            output = (ULONG64 *)Irp->AssociatedIrp.SystemBuffer;
+            input_msr_req = (struct MSR_Request *)input;
+            input_pcicfg_req = (struct PCICFG_Request *)input;
+            input_mmap_req = (struct MMAP_Request*)input;
 
             RtlSecureZeroMemory(&ProcNumber, sizeof(PROCESSOR_NUMBER));
 
