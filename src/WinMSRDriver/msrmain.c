@@ -24,12 +24,21 @@ struct DeviceExtension
     HANDLE counterSetHandle;
     ULONG processorCount;
 
+    // pcm IOCTL -> MSR lock state -> MSR KeInsertQueueDpc -> MSR WaitFor dpcDone -> MSR unlock state -> ... -> pcm IOCTL done
     struct _PER_PROCESSOR_DPC_STATE
     {
-        __declspec(align(8)) 
+        __declspec(align(8))
         ERESOURCE stateLock;
         KDPC      dpc;
-        KEVENT    dpcDone;
+        struct DPC_CONTEXT
+        {
+            enum {
+                RDMSR,
+                WRMSR,
+            } whatToDo;
+            ULONG64 readData;
+            KEVENT  dpcDone;
+        } dpcContext;
     } PerProcessorDpcState[MSR_MAX_CPU_COUNT];
 };
 
@@ -246,7 +255,7 @@ NTSTATUS deviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
                 }
                 RtlSecureZeroMemory(&new_affinity, sizeof(GROUP_AFFINITY));
                 RtlSecureZeroMemory(&old_affinity, sizeof(GROUP_AFFINITY));
-                KeGetProcessorNumberFromIndex(input_msr_req->core_id, &ProcNumber);
+                KeGetProcessorNumberFromIndex(input_msr_req->core_id, &ProcNumber);                
                 new_affinity.Group = ProcNumber.Group;
                 new_affinity.Mask = 1ULL << (ProcNumber.Number);
                 KeSetSystemGroupAffinityThread(&new_affinity, &old_affinity);
