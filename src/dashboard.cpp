@@ -563,13 +563,13 @@ std::string prometheusCounters(const std::string& m)
     return std::string("rate(") + prometheusMetric(m) + prometheusSystem() + interval + ")";
 }
 
-Mutex dashboardGenMutex;
+std::mutex dashboardGenMutex;
 
 std::string getPCMDashboardJSON(const PCMDashboardType type, int ns, int nu, int nc)
 {
     auto pcm = PCM::getInstance();
     auto accs = AcceleratorCounterState::getInstance();
-    std::lock_guard<Mutex> dashboardGenGuard(dashboardGenMutex);
+    std::lock_guard<std::mutex> dashboardGenGuard(dashboardGenMutex);
     const size_t NumSockets = (ns < 0) ? pcm->getNumSockets() : ns;
     const size_t NumUPILinksPerSocket = (nu < 0) ? pcm->getQPILinksPerSocket() : nu;
     const size_t maxCState = (nc < 0) ? PCM::MAX_C_STATE : nc;
