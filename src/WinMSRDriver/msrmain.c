@@ -129,7 +129,7 @@ VOID MSRUnload(PDRIVER_OBJECT DriverObject)
     }
 }
 
-int isGoodBuffer(PVOID buffer, SIZE_T size)
+int isGoodBuffer(PVOID buffer, SIZE_T size, int try_write)
 {
     int good = 0;
     ULONG_PTR page_address;
@@ -145,7 +145,14 @@ int isGoodBuffer(PVOID buffer, SIZE_T size)
             page_count = BYTES_TO_PAGES(size);
             while (page_count--)
             {
-                v = *(volatile char*)(page_address);
+                if (try_write)
+                {
+                    *(volatile char*)(page_address) = 0x00;
+                }
+                else
+                {
+                    v = *(volatile char*)(page_address);
+                }
                 page_address += PAGE_SIZE;
             }
             good = 1;
@@ -187,8 +194,8 @@ NTSTATUS deviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
         outputSize = IrpStackLocation->Parameters.DeviceIoControl.OutputBufferLength;
 
         if (outputSize >= sizeof(ULONG64)
-            && isGoodBuffer(input, inputSize)
-            && isGoodBuffer(output, outputSize))
+            && isGoodBuffer(input, inputSize, 0)
+            && isGoodBuffer(output, outputSize, 1))
         {
             input_msr_req = (struct MSR_Request *)input;
             input_pcicfg_req = (struct PCICFG_Request *)input;
