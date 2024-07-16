@@ -21,7 +21,7 @@
 // pcm IOCTL -> MSR lock state -> MSR KeInsertQueueDpc -> MSR WaitFor dpcDone -> MSR unlock state -> ... -> pcm IOCTL done
 typedef struct _DPC_CONTEXT
 {
-    enum {
+    enum WHAT_TO_DO {
         RDMSR,
         WRMSR,
     } whatToDo;
@@ -102,7 +102,6 @@ DriverEntry(
     struct DeviceExtension * pExt = NULL;
     UNICODE_STRING devMemPath;
     OBJECT_ATTRIBUTES attr;
-    PROCESSOR_NUMBER ProcNumber;
     ULONG processorCount;
     ULONG i;
     PPER_PROCESSOR_DPC_STATE dpcState;
@@ -142,13 +141,6 @@ DriverEntry(
         dpcState = &pExt->PerProcDpcState[i];
 
         ExInitializeFastMutex(&dpcState->mutex);
-        KeInitializeDpc(&dpcState->dpc, MyDeferredRoutine, &dpcState->dpcContext);
-        RtlSecureZeroMemory(&ProcNumber, sizeof(PROCESSOR_NUMBER));
-        KeGetProcessorNumberFromIndex(i, &ProcNumber);
-        status = KeSetTargetProcessorDpcEx(&dpcState->dpc, &ProcNumber);
-        if (!NT_SUCCESS(status))
-            return status;
-        KeSetImportanceDpc(&dpcState->dpc, HighImportance);
         KeInitializeEvent(&dpcState->dpcContext.dpcDoneEvent, SynchronizationEvent, FALSE);
     }
     pExt->processorCount = processorCount;
@@ -252,6 +244,7 @@ NTSTATUS deviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
     SIZE_T mmapSize = 0;
     PVOID baseAddress = NULL;
     PPER_PROCESSOR_DPC_STATE dpcState;
+    enum WHAT_TO_DO what = RDMSR;
 
     pExt = DeviceObject->DeviceExtension;
 
@@ -279,34 +272,7 @@ NTSTATUS deviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
             switch (IrpStackLocation->Parameters.DeviceIoControl.IoControlCode)
             {
             case IO_CTL_MSR_WRITE:
-                if (inputSize < sizeof(struct MSR_Request)
-                    || !(0 <= input_msr_req->core_id && input_msr_req->core_id < (int)pExt->processorCount)
-                    )
-                {
-                    status = STATUS_INVALID_PARAMETER;
-                    break;
-                }                
-
-                dpcState = &pExt->PerProcDpcState[input_msr_req->core_id];
-                
-                ExAcquireFastMutex(&dpcState->mutex);
-                dpcState->dpcContext.whatToDo = WRMSR;
-                
-                if (!KeInsertQueueDpc(&dpcState->dpc, (PVOID)input_msr_req->msr_address, (PVOID)input_msr_req->write_value))
-                {
-                    // this is unexpected
-                    status = STATUS_UNSUCCESSFUL;
-                    DbgPrint("Error: Failed to queue dpc in IO_CTL_MSR_WRITE core 0x%X msr 0x%llX value 0x%llX\n",
-                        input_msr_req->core_id, input_msr_req->msr_address, input_msr_req->write_value);
-                }
-                else
-                {
-                    status = KeWaitForSingleObject(&dpcState->dpcContext.dpcDoneEvent, Executive, KernelMode, FALSE, NULL);
-                }
-
-                ExReleaseFastMutex(&dpcState->mutex);
-                Irp->IoStatus.Information = 0;                         // result size
-                break;
+                what = WRMSR;
             case IO_CTL_MSR_READ:
                 if (inputSize < sizeof(struct MSR_Request)
                     || !(0 <= input_msr_req->core_id && input_msr_req->core_id < (int)pExt->processorCount)
@@ -316,25 +282,35 @@ NTSTATUS deviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
                     break;
                 }
                 dpcState = &pExt->PerProcDpcState[input_msr_req->core_id];
-
+                
                 ExAcquireFastMutex(&dpcState->mutex);
-                dpcState->dpcContext.whatToDo = RDMSR;
 
-                if (!KeInsertQueueDpc(&dpcState->dpc, (PVOID)input_msr_req->msr_address, 0))
-                {
-                    // this is unexpected
-                    status = STATUS_UNSUCCESSFUL;
-                    DbgPrint("Error: Failed to queue dpc in IO_CTL_MSR_READ core 0x%X msr 0x%llX value 0x%llX\n",
-                        input_msr_req->core_id, input_msr_req->msr_address, input_msr_req->write_value);
-                }
-                else
-                {
-                    status = KeWaitForSingleObject(&dpcState->dpcContext.dpcDoneEvent, Executive, KernelMode, FALSE, NULL);
-                    *output = dpcState->dpcContext.readData;
-                }
+                dpcState->dpcContext.whatToDo = what;
 
+                KeInitializeDpc(&dpcState->dpc, MyDeferredRoutine, &dpcState->dpcContext);
+                RtlSecureZeroMemory(&ProcNumber, sizeof(PROCESSOR_NUMBER));
+                KeGetProcessorNumberFromIndex(input_msr_req->core_id, &ProcNumber);
+                status = KeSetTargetProcessorDpcEx(&dpcState->dpc, &ProcNumber);
+                if (NT_SUCCESS(status))
+                {
+                    KeSetImportanceDpc(&dpcState->dpc, HighImportance);
+                    if (KeInsertQueueDpc(&dpcState->dpc, (PVOID)input_msr_req->msr_address, (PVOID)input_msr_req->write_value))
+                    {
+                        status = KeWaitForSingleObject(&dpcState->dpcContext.dpcDoneEvent, Executive, KernelMode, FALSE, NULL);
+                        if (RDMSR == what)
+                        {
+                            *output = dpcState->dpcContext.readData;
+                        }
+                    }
+                    else
+                    {
+                        status = STATUS_UNSUCCESSFUL;
+                        DbgPrint("Error: Failed to queue dpc in IO_CTL_MSR_WRITE core 0x%X msr 0x%llX value 0x%llX\n",
+                            input_msr_req->core_id, input_msr_req->msr_address, input_msr_req->write_value);
+                    }
+                }
                 ExReleaseFastMutex(&dpcState->mutex);
-                Irp->IoStatus.Information = sizeof(ULONG64);                         // result size
+                Irp->IoStatus.Information = (RDMSR == what)? sizeof(ULONG64): 0; // result size
                 break;
             case IO_CTL_MMAP_SUPPORT:
                 *output = 1;
