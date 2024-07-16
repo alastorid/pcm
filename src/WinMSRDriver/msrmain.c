@@ -27,6 +27,7 @@ typedef struct _DPC_CONTEXT
     } whatToDo;
     ULONG64 readData;
     KEVENT  dpcDoneEvent;
+    ULONG success;
 } DPC_CONTEXT, *PDPC_CONTEXT;
 
 typedef struct _PER_PROCESSOR_DPC_STATE
@@ -73,13 +74,30 @@ MyDeferredRoutine(
 {
     UNREFERENCED_PARAMETER(Dpc);
     PDPC_CONTEXT ctx = (PDPC_CONTEXT)DeferredContext;
+    ctx->success = 0;
     switch(ctx->whatToDo)
     {
     case RDMSR:
-        ctx->readData = __readmsr(SystemArgument1);
+        __try
+        {
+            ctx->readData = __readmsr(SystemArgument1);
+            ctx->success = 1;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            ctx->readData = 0;
+        }        
         break;
     case WRMSR:
-        __writemsr(SystemArgument1, SystemArgument2);
+        __try
+        {
+            __writemsr(SystemArgument1, SystemArgument2);
+            ctx->success = 1;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            ctx->readData = 0;
+        }
         break;
     default:
         // How do you get in here?
@@ -297,10 +315,17 @@ NTSTATUS deviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
                     if (KeInsertQueueDpc(&dpcState->dpc, (PVOID)input_msr_req->msr_address, (PVOID)input_msr_req->write_value))
                     {
                         status = KeWaitForSingleObject(&dpcState->dpcContext.dpcDoneEvent, Executive, KernelMode, FALSE, NULL);
-                        if (RDMSR == what)
+                        if (dpcState->dpcContext.success)
                         {
-                            *output = dpcState->dpcContext.readData;
+                            if (RDMSR == what)
+                            {
+                                *output = dpcState->dpcContext.readData;
+                            }
                         }
+                        else
+                        {
+                            status = STATUS_UNSUCCESSFUL;
+                        }                        
                     }
                     else
                     {
