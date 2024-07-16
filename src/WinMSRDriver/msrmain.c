@@ -228,13 +228,10 @@ int isGoodBuffer(PVOID buffer, SIZE_T size, int try_write)
             page_count = BYTES_TO_PAGES(size);
             while (page_count--)
             {
+                v = *(volatile char*)(page_address);
                 if (try_write)
                 {
-                    *(volatile char*)(page_address) = 0x00;
-                }
-                else
-                {
-                    v = *(volatile char*)(page_address);
+                    *(volatile char*)(page_address) = v;
                 }
                 page_address += PAGE_SIZE;
             }
