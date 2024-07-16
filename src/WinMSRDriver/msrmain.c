@@ -18,28 +18,31 @@
 #define NT_DEVICE_NAME L"\\Driver\\RDMSR"
 #define DOS_DEVICE_NAME L"\\DosDevices\\RDMSR"
 #define MSR_MAX_CPU_COUNT (2048)
+// pcm IOCTL -> MSR lock state -> MSR KeInsertQueueDpc -> MSR WaitFor dpcDone -> MSR unlock state -> ... -> pcm IOCTL done
+typedef struct _DPC_CONTEXT
+{
+    enum {
+        RDMSR,
+        WRMSR,
+    } whatToDo;
+    ULONG64 readData;
+    KEVENT  dpcDoneEvent;
+} DPC_CONTEXT, *PDPC_CONTEXT;
+
+typedef struct _PER_PROCESSOR_DPC_STATE
+{
+    __declspec(align(8))
+    FAST_MUTEX mutex;
+    KDPC       dpc;
+    DPC_CONTEXT dpcContext;
+} PER_PROCESSOR_DPC_STATE, *PPER_PROCESSOR_DPC_STATE;
+
 struct DeviceExtension
 {
     HANDLE devMemHandle;
     HANDLE counterSetHandle;
     ULONG processorCount;
-
-    // pcm IOCTL -> MSR lock state -> MSR KeInsertQueueDpc -> MSR WaitFor dpcDone -> MSR unlock state -> ... -> pcm IOCTL done
-    struct _PER_PROCESSOR_DPC_STATE
-    {
-        __declspec(align(8))
-        ERESOURCE stateLock;
-        KDPC      dpc;
-        struct DPC_CONTEXT
-        {
-            enum {
-                RDMSR,
-                WRMSR,
-            } whatToDo;
-            ULONG64 readData;
-            KEVENT  dpcDone;
-        } dpcContext;
-    } PerProcessorDpcState[MSR_MAX_CPU_COUNT];
+    PER_PROCESSOR_DPC_STATE PerProcDpcState[MSR_MAX_CPU_COUNT];
 };
 
 DRIVER_INITIALIZE DriverEntry;
@@ -60,6 +63,31 @@ DRIVER_UNLOAD MSRUnload;
 #pragma alloc_text(PAGE,deviceControl)
 #endif
 
+void
+MyDeferredRoutine(
+    KDPC* Dpc,
+    PVOID DeferredContext,
+    PVOID SystemArgument1,
+    PVOID SystemArgument2
+)
+{
+    UNREFERENCED_PARAMETER(Dpc);
+    PDPC_CONTEXT ctx = (PDPC_CONTEXT)DeferredContext;
+    switch(ctx->whatToDo)
+    {
+    case RDMSR:
+        ctx->readData = __readmsr(SystemArgument1);
+        break;
+    case WRMSR:
+        __writemsr(SystemArgument1, SystemArgument2);
+        break;
+    default:
+        // How do you get in here?
+        // __debugbreak();
+        break;
+    }
+    KeSetEvent(&ctx->dpcDoneEvent, 0, FALSE);
+}
 
 NTSTATUS
 DriverEntry(
@@ -74,8 +102,10 @@ DriverEntry(
     struct DeviceExtension * pExt = NULL;
     UNICODE_STRING devMemPath;
     OBJECT_ATTRIBUTES attr;
+    PROCESSOR_NUMBER ProcNumber;
     ULONG processorCount;
     ULONG i;
+    PPER_PROCESSOR_DPC_STATE dpcState;
 
     UNREFERENCED_PARAMETER(RegistryPath);
 
@@ -109,7 +139,17 @@ DriverEntry(
 
     for (i = 0; i < processorCount; ++i)
     {
-        ExInitializeResourceLite(&pExt->PerProcessorDpcState[i].stateLock);
+        dpcState = &pExt->PerProcDpcState[i];
+
+        ExInitializeFastMutex(&dpcState->mutex);
+        KeInitializeDpc(&dpcState->dpc, MyDeferredRoutine, &dpcState->dpcContext);
+        RtlSecureZeroMemory(&ProcNumber, sizeof(PROCESSOR_NUMBER));
+        KeGetProcessorNumberFromIndex(i, &ProcNumber);
+        status = KeSetTargetProcessorDpcEx(&dpcState->dpc, &ProcNumber);
+        if (!NT_SUCCESS(status))
+            return status;
+        KeSetImportanceDpc(&dpcState->dpc, HighImportance);
+        KeInitializeEvent(&dpcState->dpcContext.dpcDoneEvent, SynchronizationEvent, FALSE);
     }
     pExt->processorCount = processorCount;
     
@@ -119,7 +159,6 @@ DriverEntry(
     if (!NT_SUCCESS(status))
     {
         DbgPrint("Error: failed ZwOpenSection(devMemHandle) => %08X\n", status);
-        IoDeleteDevice(MSRSystemDeviceObject);
         return status;
     }
     pExt->counterSetHandle = NULL;
@@ -150,8 +189,6 @@ VOID MSRUnload(PDRIVER_OBJECT DriverObject)
 {
     PDEVICE_OBJECT deviceObject = DriverObject->DeviceObject;
     UNICODE_STRING nameString;
-    struct DeviceExtension *pExt;
-    ULONG i;
 
     PAGED_CODE();
 
@@ -161,12 +198,6 @@ VOID MSRUnload(PDRIVER_OBJECT DriverObject)
 
     if (deviceObject != NULL)
     {
-        pExt = deviceObject->DeviceExtension;
-        for (i = 0; i < pExt->processorCount; ++i)
-        {
-            ExDeleteResourceLite(&pExt->PerProcessorDpcState[i].stateLock);
-        }
-
         IoDeleteDevice(deviceObject);
     }
 }
@@ -212,7 +243,6 @@ NTSTATUS deviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
     struct PCICFG_Request * input_pcicfg_req = NULL;
     struct MMAP_Request* input_mmap_req = NULL;
     ULONG64 * output = NULL, *input = NULL;
-    GROUP_AFFINITY old_affinity, new_affinity;
     ULONG inputSize = 0, outputSize = 0;
     PCI_SLOT_NUMBER slot;
     unsigned size = 0;
@@ -221,6 +251,7 @@ NTSTATUS deviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
     LARGE_INTEGER offset;
     SIZE_T mmapSize = 0;
     PVOID baseAddress = NULL;
+    PPER_PROCESSOR_DPC_STATE dpcState;
 
     pExt = DeviceObject->DeviceExtension;
 
@@ -248,53 +279,61 @@ NTSTATUS deviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
             switch (IrpStackLocation->Parameters.DeviceIoControl.IoControlCode)
             {
             case IO_CTL_MSR_WRITE:
-                if (inputSize < sizeof(struct MSR_Request))
+                if (inputSize < sizeof(struct MSR_Request)
+                    || !(0 <= input_msr_req->core_id && input_msr_req->core_id < (int)pExt->processorCount)
+                    )
                 {
                     status = STATUS_INVALID_PARAMETER;
                     break;
-                }
-                RtlSecureZeroMemory(&new_affinity, sizeof(GROUP_AFFINITY));
-                RtlSecureZeroMemory(&old_affinity, sizeof(GROUP_AFFINITY));
-                KeGetProcessorNumberFromIndex(input_msr_req->core_id, &ProcNumber);                
-                new_affinity.Group = ProcNumber.Group;
-                new_affinity.Mask = 1ULL << (ProcNumber.Number);
-                KeSetSystemGroupAffinityThread(&new_affinity, &old_affinity);
-                __try
+                }                
+
+                dpcState = &pExt->PerProcDpcState[input_msr_req->core_id];
+                
+                ExAcquireFastMutex(&dpcState->mutex);
+                dpcState->dpcContext.whatToDo = WRMSR;
+                
+                if (!KeInsertQueueDpc(&dpcState->dpc, (PVOID)input_msr_req->msr_address, (PVOID)input_msr_req->write_value))
                 {
-                    __writemsr(input_msr_req->msr_address, input_msr_req->write_value);
+                    // this is unexpected
+                    status = STATUS_UNSUCCESSFUL;
+                    DbgPrint("Error: Failed to queue dpc in IO_CTL_MSR_WRITE core 0x%X msr 0x%llX value 0x%llX\n",
+                        input_msr_req->core_id, input_msr_req->msr_address, input_msr_req->write_value);
                 }
-                __except (EXCEPTION_EXECUTE_HANDLER)
+                else
                 {
-                    status = GetExceptionCode();
-                    DbgPrint("Error: exception with code 0x%X in IO_CTL_MSR_WRITE core 0x%X msr 0x%llX value 0x%llX\n",
-                        status, input_msr_req->core_id, input_msr_req->msr_address, input_msr_req->write_value);
+                    status = KeWaitForSingleObject(&dpcState->dpcContext.dpcDoneEvent, Executive, KernelMode, FALSE, NULL);
                 }
-                KeRevertToUserGroupAffinityThread(&old_affinity);
+
+                ExReleaseFastMutex(&dpcState->mutex);
                 Irp->IoStatus.Information = 0;                         // result size
                 break;
             case IO_CTL_MSR_READ:
-                if (inputSize < sizeof(struct MSR_Request))
+                if (inputSize < sizeof(struct MSR_Request)
+                    || !(0 <= input_msr_req->core_id && input_msr_req->core_id < (int)pExt->processorCount)
+                    )
                 {
                     status = STATUS_INVALID_PARAMETER;
                     break;
                 }
-                RtlSecureZeroMemory(&new_affinity, sizeof(GROUP_AFFINITY));
-                RtlSecureZeroMemory(&old_affinity, sizeof(GROUP_AFFINITY));
-                KeGetProcessorNumberFromIndex(input_msr_req->core_id, &ProcNumber);
-                new_affinity.Group = ProcNumber.Group;
-                new_affinity.Mask = 1ULL << (ProcNumber.Number);
-                KeSetSystemGroupAffinityThread(&new_affinity, &old_affinity);
-                __try
+                dpcState = &pExt->PerProcDpcState[input_msr_req->core_id];
+
+                ExAcquireFastMutex(&dpcState->mutex);
+                dpcState->dpcContext.whatToDo = RDMSR;
+
+                if (!KeInsertQueueDpc(&dpcState->dpc, (PVOID)input_msr_req->msr_address, 0))
                 {
-                    *output = __readmsr(input_msr_req->msr_address);
+                    // this is unexpected
+                    status = STATUS_UNSUCCESSFUL;
+                    DbgPrint("Error: Failed to queue dpc in IO_CTL_MSR_READ core 0x%X msr 0x%llX value 0x%llX\n",
+                        input_msr_req->core_id, input_msr_req->msr_address, input_msr_req->write_value);
                 }
-                __except (EXCEPTION_EXECUTE_HANDLER)
+                else
                 {
-                    status = GetExceptionCode();
-                    DbgPrint("Error: exception with code 0x%X in IO_CTL_MSR_READ core 0x%X msr 0x%llX\n",
-                        status, input_msr_req->core_id, input_msr_req->msr_address);
+                    status = KeWaitForSingleObject(&dpcState->dpcContext.dpcDoneEvent, Executive, KernelMode, FALSE, NULL);
+                    *output = dpcState->dpcContext.readData;
                 }
-                KeRevertToUserGroupAffinityThread(&old_affinity);
+
+                ExReleaseFastMutex(&dpcState->mutex);
                 Irp->IoStatus.Information = sizeof(ULONG64);                         // result size
                 break;
             case IO_CTL_MMAP_SUPPORT:
