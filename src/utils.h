@@ -754,11 +754,17 @@ public:
     }
     bool supported() const { return true; }
 #elif defined(_MSC_VER)
-    ThreadGroupTempAffinity affinity;
+    ThreadGroupTempAffinity *affinity;
 public:
     TemporalThreadAffinity(uint32 core, bool checkStatus = true, const bool restore = true)
-        : affinity(core, checkStatus, restore)
+        : affinity(new ThreadGroupTempAffinity(core, checkStatus, restore))
+    {}
+    TemporalThreadAffinity(uint32 core, int doNothing)
+        : affinity(1 == doNothing? nullptr : new ThreadGroupTempAffinity(core, true, true))
+    {}
+    ~TemporalThreadAffinity()
     {
+        delete affinity;
     }
     bool supported() const { return true; }
 #else // not implemented for os x

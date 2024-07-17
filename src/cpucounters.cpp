@@ -5344,7 +5344,11 @@ void BasicCounterState::readAndAggregate(std::shared_ptr<SafeMsrHandle> msr)
     uint64 cBrMispredSlots = 0;
     uint64 cHeavyOpsSlots = 0;
     const int32 core_id = msr->getCoreId();
-    TemporalThreadAffinity tempThreadAffinity(core_id); // speedup trick for Linux
+    TemporalThreadAffinity tempThreadAffinity(core_id
+#ifdef _MSC_VER
+        , msr->usePcmMsr()? 1 : 0
+#endif
+        ); // speedup trick for Linux
 
     PCM * m = PCM::getInstance();
     assert(m);
