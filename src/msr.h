@@ -44,9 +44,10 @@ class MsrHandle
 
 public:
     MsrHandle(uint32 cpu);
-    int32 read(uint64 msr_number, uint64 * value);
-    int32 write(uint64 msr_number, uint64 value);
+    int32 read(uint64 msr_number, uint64* value, int32 cpu = -1);
+    int32 write(uint64 msr_number, uint64 value, int32 cpu = -1);
     int32 getCoreId() { return (int32)cpu_id; }
+    bool usePcmMsr() { return !!hDriver; }
 #ifdef __APPLE__
     int32 buildTopology(uint32 num_cores, void *);
     uint32 getNumInstances();
@@ -69,6 +70,14 @@ public:
 
     SafeMsrHandle(uint32 core_id) : pHandle(new MsrHandle(core_id))
     { }
+
+    bool usePcmMsr() { 
+#ifdef _MSC_VER
+        return pHandle->usePcmMsr();
+#else
+        return false;
+#endif
+    }
 
     int32 read(uint64 msr_number, uint64 * value)
     {

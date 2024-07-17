@@ -3067,10 +3067,12 @@ PCM::PCM() :
     perfEventHandle.resize(num_cores, std::vector<int>(PERF_MAX_COUNTERS, -1));
     std::fill(perfTopDownPos.begin(), perfTopDownPos.end(), 0);
 #endif
-
-    for (int32 i = 0; i < num_cores; ++i)
+    if (!MSR[0]->usePcmMsr())
     {
-        coreTaskQueues.push_back(std::make_shared<CoreTaskQueue>(i));
+        for (int32 i = 0; i < num_cores; ++i)
+        {
+            coreTaskQueues.push_back(std::make_shared<CoreTaskQueue>(i));
+        }
     }
 
 #ifndef PCM_SILENT
@@ -3769,8 +3771,15 @@ PCM::ErrorCode PCM::program(const PCM::ProgramMode mode_, const void * parameter
 
                 programmingStatuses[i] = programCoreCounters(i, mode_, pExtDesc, lastProgrammedCustomCounters[i], tids);
             });
-        asyncCoreResults.push_back(task.get_future());
-        coreTaskQueues[i]->push(task);
+        if (MSR[i]->usePcmMsr())
+        {
+            task();
+        }
+        else
+        {
+            asyncCoreResults.push_back(task.get_future());
+            coreTaskQueues[i]->push(task);
+        }
     }
 
     for (auto& ar : asyncCoreResults)
@@ -6728,8 +6737,15 @@ void PCM::getAllCounterStates(SystemCounterState & systemState, std::vector<Sock
                     readMSRs(MSR[core], threadMSRConfig, coreStates[core]);
                 }
             );
-            asyncCoreResults.push_back(task.get_future());
-            coreTaskQueues[core]->push(task);
+            if (MSR[core]->usePcmMsr())
+            {
+                task();
+            }
+            else
+            {
+                asyncCoreResults.push_back(task.get_future());
+                coreTaskQueues[core]->push(task);
+            }
         }
         // std::cout << "DEBUG2: " << core << " " << coreStates[core].InstRetiredAny << " \n";
     }
@@ -6745,8 +6761,15 @@ void PCM::getAllCounterStates(SystemCounterState & systemState, std::vector<Sock
                 readPackageThermalHeadroom(s, socketStates[s]);
                 readMSRs(MSR[refCore], packageMSRConfig, socketStates[s]);
             } );
-        asyncCoreResults.push_back(task.get_future());
-        coreTaskQueues[refCore]->push(task);
+        if (MSR[refCore]->usePcmMsr())
+        {
+            task();
+        }
+        else
+        {
+            asyncCoreResults.push_back(task.get_future());
+            coreTaskQueues[refCore]->push(task);
+        }        
     }
 
     if (readAndAggregateSocketUncoreCounters)

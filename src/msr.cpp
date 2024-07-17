@@ -52,14 +52,14 @@ MsrHandle::~MsrHandle()
     if (hDriver != INVALID_HANDLE_VALUE) CloseHandle(hDriver);
 }
 
-int32 MsrHandle::write(uint64 msr_number, uint64 value)
+int32 MsrHandle::write(uint64 msr_number, uint64 value, int32 cpu)
 {
     if (hDriver != INVALID_HANDLE_VALUE)
     {
         MSR_Request req;
         ULONG64 result;
         DWORD reslength = 0;
-        req.core_id = cpu_id;
+        req.core_id = -1 != cpu ? cpu : cpu_id;
         req.msr_address = msr_number;
         req.write_value = value;
         BOOL status = DeviceIoControl(hDriver, IO_CTL_MSR_WRITE, &req, sizeof(MSR_Request), &result, sizeof(uint64), &reslength, NULL);
@@ -76,14 +76,14 @@ int32 MsrHandle::write(uint64 msr_number, uint64 value)
     return status ? sizeof(uint64) : 0;
 }
 
-int32 MsrHandle::read(uint64 msr_number, uint64 * value)
+int32 MsrHandle::read(uint64 msr_number, uint64 * value, int32 cpu)
 {
     if (hDriver != INVALID_HANDLE_VALUE)
     {
         MSR_Request req;
         // ULONG64 result;
         DWORD reslength = 0;
-        req.core_id = cpu_id;
+        req.core_id = -1 != cpu ? cpu : cpu_id;
         req.msr_address = msr_number;
         BOOL status = DeviceIoControl(hDriver, IO_CTL_MSR_READ, &req, sizeof(MSR_Request), value, sizeof(uint64), &reslength, NULL);
         assert(status && "Error in DeviceIoControl");
