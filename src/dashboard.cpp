@@ -555,12 +555,12 @@ const char* interval = "[4s]";
 
 std::string prometheusCounters(const std::string& S, const std::string& m, const bool aggregate = true)
 {
-    return std::string("avg_over_time(") + prometheusMetric(m) + prometheusSocket(S, aggregate) + interval + ")";
+    return std::string("rate(") + prometheusMetric(m) + prometheusSocket(S, aggregate) + interval + ")";
 }
 
 std::string prometheusCounters(const std::string& m)
 {
-    return std::string("avg_over_time(") + prometheusMetric(m) + prometheusSystem() + interval + ")";
+    return std::string("rate(") + prometheusMetric(m) + prometheusSystem() + interval + ")";
 }
 
 Mutex dashboardGenMutex;
