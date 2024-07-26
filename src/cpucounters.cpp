@@ -6155,7 +6155,11 @@ void PCM::unfreezeServerUncoreCounters()
 void UncoreCounterState::readAndAggregate(std::shared_ptr<SafeMsrHandle> msr)
 {
     const auto coreID = msr->getCoreId();
-    TemporalThreadAffinity tempThreadAffinity(coreID); // speedup trick for Linux
+    TemporalThreadAffinity tempThreadAffinity(coreID
+#ifdef _MSC_VER
+        , msr->usePcmMsr() ? 1 : 0
+#endif
+    ); // speedup trick for Linux
 
     auto pcm = PCM::getInstance();
     pcm->readAndAggregatePackageCStateResidencies(msr, *this);
@@ -6343,7 +6347,11 @@ void PCM::readAndAggregateUncoreMCCounters(const uint32 socket, CounterStateType
     else
     {
         std::shared_ptr<SafeMsrHandle> msr = MSR[socketRefCore[socket]];
-        TemporalThreadAffinity tempThreadAffinity(socketRefCore[socket]); // speedup trick for Linux
+        TemporalThreadAffinity tempThreadAffinity(socketRefCore[socket]
+#ifdef _MSC_VER
+            , msr->usePcmMsr() ? 1 : 0
+#endif
+        ); // speedup trick for Linux
         switch (cpu_model)
         {
             case PCM::WESTMERE_EP:
@@ -6578,7 +6586,11 @@ void PCM::readQPICounters(SystemCounterState & result)
 
                 if (!SocketProcessed[s])
                 {
-                    TemporalThreadAffinity tempThreadAffinity(core); // speedup trick for Linux
+                    TemporalThreadAffinity tempThreadAffinity(core
+#ifdef _MSC_VER
+                        , MSR[core]->usePcmMsr() ? 1 : 0
+#endif
+                    ); // speedup trick for Linux
 
                     // incoming data responses from QPI link 0
                     MSR[core]->read(R_MSR_PMON_CTR1, &(result.incomingQPIPackets[s][0]));
@@ -6618,7 +6630,11 @@ void PCM::readQPICounters(SystemCounterState & result)
 
                 for (int s = 0; s < 2; ++s)
                 {
-                    TemporalThreadAffinity tempThreadAffinity(SCore[s]); // speedup trick for Linux
+                    TemporalThreadAffinity tempThreadAffinity(SCore[s]
+#ifdef _MSC_VER
+                        , MSR[SCore[s]]->usePcmMsr() ? 1 : 0
+#endif
+                    ); // speedup trick for Linux
 
                     MSR[SCore[s]]->read(MSR_UNCORE_PMC0, &Total_Writes[s]);
                     MSR[SCore[s]]->read(MSR_UNCORE_PMC1, &Total_Reads[s]);
