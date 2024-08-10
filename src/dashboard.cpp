@@ -553,22 +553,12 @@ std::string influxDBUncore_Uncore_Counters(const std::string& S, const std::stri
 
 const char* interval = "[4s]";
 
-std::string prometheus_Aggregate_Core_Counters(const std::string& S, const std::string& m, const bool aggregate = true)
-{
-    return prometheusMetric(m) + prometheusSocket(S, aggregate);
-}
-
-std::string prometheus_Aggregate_Core_Counters(const std::string& m)
-{
-    return prometheusMetric(m) + prometheusSystem();
-}
-
-std::string prometheus_Uncore_Counters(const std::string& S, const std::string& m, const bool aggregate = true)
+std::string prometheusCounters(const std::string& S, const std::string& m, const bool aggregate = true)
 {
     return std::string("rate(") + prometheusMetric(m) + prometheusSocket(S, aggregate) + interval + ")";
 }
 
-std::string prometheus_Uncore_Counters(const std::string& m)
+std::string prometheusCounters(const std::string& m)
 {
     return std::string("rate(") + prometheusMetric(m) + prometheusSystem() + interval + ")";
 }
@@ -623,13 +613,13 @@ std::string getPCMDashboardJSON(const PCMDashboardType type, int ns, int nu, int
         for (size_t s = 0; s < NumSockets; ++s)
         {
             const auto S = std::to_string(s);
-            auto t = createTarget("Socket" + S, influxDBCore_Aggregate_Core_Counters(S, m) + op, prometheus_Aggregate_Core_Counters(S, m) + op);
+            auto t = createTarget("Socket" + S, influxDBCore_Aggregate_Core_Counters(S, m) + op, prometheusCounters(S, m) + op);
             panel->push(t);
             panel1->push(t);
         }
         if (total)
         {
-            auto t = createTarget("Total", influxDBCore_Aggregate_Core_Counters(m) + op, prometheus_Aggregate_Core_Counters(m) + op);
+            auto t = createTarget("Total", influxDBCore_Aggregate_Core_Counters(m) + op, prometheusCounters(m) + op);
             panel->push(t);
             panel1->push(t);
             dashboard.push(panel);
@@ -649,7 +639,7 @@ std::string getPCMDashboardJSON(const PCMDashboardType type, int ns, int nu, int
         for (size_t d = 0; d < (std::max)(pcm->getNumUFSDies(), (size_t)1ULL); ++d)
         {
           auto m = std::string("Uncore Frequency Die ") + std::to_string(d);
-          auto t = createTarget(m, influxDBUncore_Uncore_Counters(S, m) + op, prometheus_Uncore_Counters(S, m, false) + op);
+          auto t = createTarget(m, influxDBUncore_Uncore_Counters(S, m) + op, prometheusCounters(S, m, false) + op);
           panel->push(t);
           panel1->push(t);
         }
@@ -664,7 +654,7 @@ std::string getPCMDashboardJSON(const PCMDashboardType type, int ns, int nu, int
         y += height;
         for (auto &m : {"Package Joules Consumed", "DRAM Joules Consumed", "PP0 Joules Consumed", "PP1 Joules Consumed"})
         {
-          auto t = createTarget(m, influxDBUncore_Uncore_Counters(S, m), prometheus_Uncore_Counters(S, m, false));
+          auto t = createTarget(m, influxDBUncore_Uncore_Counters(S, m), prometheusCounters(S, m, false));
           panel->push(t);
           panel1->push(t);
         }
@@ -712,12 +702,12 @@ std::string getPCMDashboardJSON(const PCMDashboardType type, int ns, int nu, int
         y += height;
         for (auto& m : { "DRAM Reads", "DRAM Writes", "Persistent Memory Reads", "Persistent Memory Writes" })
         {
-            auto t = createTarget(m, influxDBUncore_Uncore_Counters(S, m) + "/1048576", prometheus_Uncore_Counters(S, m, false) + "/1048576");
+            auto t = createTarget(m, influxDBUncore_Uncore_Counters(S, m) + "/1048576", prometheusCounters(S, m, false) + "/1048576");
             panel->push(t);
             panel1->push(t);
         }
         for (auto& m : {"CXL Write Mem","CXL Write Cache" }){
-            auto t = createTarget(m, "mean(\\\"QPI/UPI Links_QPI Counters Socket " + S + "_" + m + "\\\")/1048576", prometheus_Uncore_Counters(S, m, false) + "/1048576");
+            auto t = createTarget(m, "mean(\\\"QPI/UPI Links_QPI Counters Socket " + S + "_" + m + "\\\")/1048576", prometheusCounters(S, m, false) + "/1048576");
             panel->push(t);
             panel1->push(t);
          }
@@ -725,7 +715,7 @@ std::string getPCMDashboardJSON(const PCMDashboardType type, int ns, int nu, int
         {
             auto t = createTarget(m + "Total",
             "(" + influxDBUncore_Uncore_Counters(S, m + "Writes") + "+" + influxDBUncore_Uncore_Counters(S, m + "Reads") + ")/1048576",
-            "(" + prometheus_Uncore_Counters(S, m + "Writes", false) + "+" + prometheus_Uncore_Counters(S, m + "Reads", false) + ")/1048576");
+            "(" + prometheusCounters(S, m + "Writes", false) + "+" + prometheusCounters(S, m + "Reads", false) + ")/1048576");
             panel->push(t);
             panel1->push(t);
         }
@@ -742,7 +732,7 @@ std::string getPCMDashboardJSON(const PCMDashboardType type, int ns, int nu, int
       auto panel1 = std::make_shared<BarGaugePanel>(width, y, max_width - width, height,std::string("Current Socket") + S + "Near Memory Hit/Miss");
         for (auto& m : {"NM Hits","NM Misses","NM Miss Bw"})
           {
-              auto t = createTarget(m, influxDBUncore_Uncore_Counters(S, m) + "/1048576", prometheus_Uncore_Counters(S, m, false) + "/1048576");
+              auto t = createTarget(m, influxDBUncore_Uncore_Counters(S, m) + "/1048576", prometheusCounters(S, m, false) + "/1048576");
               panel->push(t);
               panel1->push(t);
           }
@@ -757,7 +747,7 @@ std::string getPCMDashboardJSON(const PCMDashboardType type, int ns, int nu, int
       for (size_t s = 0; s < NumSockets; ++s)
       {
         const auto S = std::to_string(s);
-        auto t = createTarget("Socket " + S, influxDBUncore_Uncore_Counters(S, "NM HitRate") + "/1048576", prometheus_Uncore_Counters(S, "NM HitRate", false) + "/1048576");
+        auto t = createTarget("Socket " + S, influxDBUncore_Uncore_Counters(S, "NM HitRate") + "/1048576", prometheusCounters(S, "NM HitRate", false) + "/1048576");
               NMpanel->push(t);
               NMpanel1->push(t);
         
@@ -777,11 +767,11 @@ std::string getPCMDashboardJSON(const PCMDashboardType type, int ns, int nu, int
             ")/" +
             "(" + influxDBUncore_Uncore_Counters(S, "DRAM Writes") +
             "+" + influxDBUncore_Uncore_Counters(S, "DRAM Reads") + ")",
-            "(" + prometheus_Uncore_Counters(S, "Persistent Memory Writes", false) +
-            "+" + prometheus_Uncore_Counters(S, "Persistent Memory Reads", false) +
+            "(" + prometheusCounters(S, "Persistent Memory Writes", false) +
+            "+" + prometheusCounters(S, "Persistent Memory Reads", false) +
             ")/" +
-            "(" + prometheus_Uncore_Counters(S, "DRAM Writes", false) +
-            "+" + prometheus_Uncore_Counters(S, "DRAM Reads", false) +")");
+            "(" + prometheusCounters(S, "DRAM Writes", false) +
+            "+" + prometheusCounters(S, "DRAM Reads", false) +")");
         panel->push(t);
         panel1->push(t);
     }
@@ -900,13 +890,13 @@ std::string getPCMDashboardJSON(const PCMDashboardType type, int ns, int nu, int
             const auto S = std::to_string(s);
             auto t = createTarget("Socket" + S,
                 influxDBCore_Aggregate_Core_Counters(S, dividend) + "/" + influxDBCore_Aggregate_Core_Counters(S, divisor),
-                prometheus_Uncore_Counters(S, dividend) + "/" + prometheus_Uncore_Counters(S, divisor));
+                prometheusCounters(S, dividend) + "/" + prometheusCounters(S, divisor));
             panel->push(t);
             panel1->push(t);
         }
         auto t = createTarget("Total",
             influxDBCore_Aggregate_Core_Counters(dividend) + "/" + influxDBCore_Aggregate_Core_Counters(divisor),
-            prometheus_Uncore_Counters(dividend) + "/" + prometheus_Uncore_Counters(divisor)
+            prometheusCounters(dividend) + "/" + prometheusCounters(divisor)
         );
         panel->push(t);
         panel1->push(t);
