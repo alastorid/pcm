@@ -14,6 +14,7 @@
 #include <fstream>
 #include <time.h>
 #include "types.h"
+#include "debug.h"
 #include <vector>
 #include <list>
 #include <chrono>
@@ -40,6 +41,7 @@
 #ifdef __linux__
 #include <unistd.h>
 #endif
+
 namespace pcm {
 
     template <class T>
@@ -81,6 +83,7 @@ namespace pcm {
     #define PCM_STRING(x) (x)
 #endif
     void eraseEnvironmentVariables(const std::vector<StringType>& keepList);
+    void setDefaultDebugLevel();
 }
 
 #ifdef _MSC_VER
@@ -103,6 +106,7 @@ int main(int argc, char * argv[]) \
     PCM_SET_DLL_DIR \
     if (pcm::safe_getenv("PCM_NO_MAIN_EXCEPTION_HANDLER") == std::string("1")) return mainThrows(argc, argv); \
     try { \
+        setDefaultDebugLevel(); \
         return mainThrows(argc, argv); \
     } catch(const std::runtime_error & e) \
     { \
@@ -140,6 +144,7 @@ void set_signal_handlers(void);
 void set_real_time_priority(const bool & silent);
 void restore_signal_handlers(void);
 #ifndef _MSC_VER
+void printBacktrace();
 void sigINT_handler(int signum);
 void sigHUP_handler(int signum);
 void sigUSR_handler(int signum);
@@ -247,6 +252,27 @@ inline std::string unit_format(IntType n)
 }
 
 void print_cpu_details();
+
+
+inline void printDebugCallstack()
+{
+#ifndef _MSC_VER
+    if (safe_getenv("PCM_PRINT_DEBUG_CALLSTACK") == "1")
+    {
+        printBacktrace();
+    }
+#endif
+}
+
+template <unsigned Bytes>
+inline void warnAlignment(const char* call, const bool silent, const uint64 offset)
+{
+    if (silent == false && (offset % Bytes) != 0)
+    {
+        std::cerr << "PCM Warning: " << call << " offset " << offset << " is not " << Bytes << "-byte aligned\n";
+        printDebugCallstack();
+    }
+}
 
 #define PCM_UNUSED(x) (void)(x)
 
@@ -379,20 +405,22 @@ inline void choose(const CsvOutputType outputType, H1 h1Func, H2 h2Func, D dataF
     }
 }
 
-inline void printDateForCSV(const CsvOutputType outputType, std::string separator = std::string(","))
+inline void printDateForCSV(const CsvOutputType outputType, std::string separator = std::string(","), std::string * out = nullptr)
 {
+    std::ostringstream strstr;
+    std::ostream & stdcout = out ? strstr : std::cout;
     choose(outputType,
-        [&separator]() {
-            std::cout << separator << separator; // Time
+        [&separator, &stdcout]() {
+            stdcout << separator << separator; // Time
         },
-        [&separator]() {
-            std::cout << "Date" << separator << "Time" << separator;
+        [&separator, &stdcout]() {
+            stdcout << "Date" << separator << "Time" << separator;
         },
-        [&separator]() {
+        [&separator, &stdcout]() {
             std::pair<tm, uint64> tt{ pcm_localtime() };
-            std::cout.precision(3);
-            char old_fill = std::cout.fill('0');
-            std::cout <<
+            stdcout.precision(3);
+            char old_fill = stdcout.fill('0');
+            stdcout <<
                 std::setw(4) <<  1900 + tt.first.tm_year << '-' <<
                 std::setw(2) << 1 + tt.first.tm_mon << '-' <<
                 std::setw(2) << tt.first.tm_mday << separator <<
@@ -400,10 +428,14 @@ inline void printDateForCSV(const CsvOutputType outputType, std::string separato
                 std::setw(2) << tt.first.tm_min << ':' <<
                 std::setw(2) << tt.first.tm_sec << '.' <<
                 std::setw(3) << tt.second << separator; // milliseconds
-            std::cout.fill(old_fill);
-            std::cout.setf(std::ios::fixed);
-            std::cout.precision(2);
+            stdcout.fill(old_fill);
+            stdcout.setf(std::ios::fixed);
+            stdcout.precision(2);
         });
+        if (out)
+        {
+            *out = strstr.str();
+        }
 }
 
 inline void printDateForJson(const std::string& separator, const std::string &jsonSeparator)
@@ -479,7 +511,7 @@ public:
     void operator ()(const Body & body)
     {
         unsigned int i = 1;
-        // std::cerr << "DEBUG: numberOfIterations: " << numberOfIterations << "\n";
+        DBG(1, "numberOfIterations: " , numberOfIterations);
         while ((i <= numberOfIterations) || (numberOfIterations == 0))
         {
             if (body() == false)
@@ -577,6 +609,7 @@ typedef enum{
     EVT_LINE_COMPLETE
 }evt_cb_type;
 
+void getMCFGRecords(std::vector<MCFGRecord>& mcfg);
 std::string dos2unix(std::string in);
 bool isRegisterEvent(const std::string & pmu);
 std::string a_title (const std::string &init, const std::string &name);
@@ -678,7 +711,7 @@ void restrictDriverAccessNative(LPCTSTR path);
 std::vector<std::string> findPathsFromPattern(const char* pattern);
 #endif
 
-class TemporalThreadAffinity  // speedup trick for Linux, FreeBSD, DragonFlyBSD, Windows
+class TemporalThreadAffinity
 {
     TemporalThreadAffinity(); // forbidden
 #if defined(__FreeBSD__) || (defined(__DragonFly__) && __DragonFly_version >= 400707)

@@ -38,6 +38,8 @@ using namespace pcm;
 #define NIS_DID 0x18D1
 #define HQM_DID 0x270B
 
+#define GRR_QAT_VRP_DID 0x5789 // Virtual Root Port to integrated QuickAssist (GRR QAT)
+#define GRR_NIS_VRP_DID 0x5788 // VRP to Network Interface and Scheduler (GRR NIS)
 
 #define ROOT_BUSES_OFFSET   0xCC
 #define ROOT_BUSES_OFFSET_2 0xD0
@@ -236,6 +238,32 @@ static const std::string spr_mcc_iio_stack_names[] = {
     "IIO Stack 8 - NONE  ",
     "IIO Stack 9 - NONE  ",
     "IIO Stack 10 - DMI  ",
+};
+
+// MS2IOSF stack IDs in CHA notation
+#define GRR_PCH_DSA_GEN4_SAD_ID 0
+#define GRR_DLB_SAD_ID          1
+#define GRR_NIS_QAT_SAD_ID      2
+
+#define GRR_PCH_DSA_GEN4_PMON_ID 2
+#define GRR_DLB_PMON_ID          1
+#define GRR_NIS_QAT_PMON_ID      0
+
+// Stack 0 contains PCH, DSA and CPU PCIe Gen4 Complex
+const std::map<int, int> grr_sad_to_pmu_id_mapping = {
+    { GRR_PCH_DSA_GEN4_SAD_ID, GRR_PCH_DSA_GEN4_PMON_ID },
+    { GRR_DLB_SAD_ID,          GRR_DLB_PMON_ID          },
+    { GRR_NIS_QAT_SAD_ID,      GRR_NIS_QAT_PMON_ID      },
+};
+
+#define GRR_DLB_PART_ID 0
+#define GRR_NIS_PART_ID 0
+#define GRR_QAT_PART_ID 1
+
+static const std::string grr_iio_stack_names[3] = {
+    "IIO Stack 0 - NIS/QAT        ",
+    "IIO Stack 1 - HQM            ",
+    "IIO Stack 2 - PCH/DSA/PCIe   "
 };
 
 #define EMR_DMI_PMON_ID         7
@@ -453,6 +481,14 @@ static const std::string srf_iio_stack_names[] = {
     "IIO Stack 14 - HCx2      ", // SRF_HC2_PMON_ID      14
 };
 
+const std::string generate_stack_str(const int unit)
+{
+    static const std::string stack_str = "Stack ";
+    std::stringstream ss;
+    ss << stack_str << std::setw(2) << unit;
+    return ss.str();
+}
+
 struct iio_counter : public counter {
   std::vector<result_content> data;
 };
@@ -640,6 +676,14 @@ vector<string> build_csv(vector<struct iio_stacks_on_socket>& iios, vector<struc
     if (show_root_port)
         header.insert(header.begin(), "Root Port");
     header.insert(header.begin(), "Socket");
+    auto insertDateTime = [&csv_delimiter](vector<string> & out, CsvOutputType type) {
+        std::string dateTime;
+        printDateForCSV(type, csv_delimiter, &dateTime);
+        // remove last delimiter
+        dateTime.pop_back();
+        out.insert(out.begin(), dateTime);
+    };
+    insertDateTime(header, CsvOutputType::Header2);
     result.push_back(build_csv_row(header, csv_delimiter));
     std::map<uint32_t,map<uint32_t,struct iio_counter*>> v_sort;
     //re-organize data collection to be row wise
@@ -685,6 +729,7 @@ vector<string> build_csv(vector<struct iio_stacks_on_socket>& iios, vector<struc
                     uint64_t raw_data = hunit->second->data[0][socket->socket_id][stack_id][std::pair<h_id,v_id>(hh_id,vv_id)];
                     current_row.push_back(human_readable ? unit_format(raw_data) : std::to_string(raw_data));
                 }
+                insertDateTime(current_row, CsvOutputType::Data);
                 result.push_back(build_csv_row(current_row, csv_delimiter));
             }
         }
@@ -708,6 +753,27 @@ public:
     uint32_t cpuId() const { return m_model; }
 };
 
+void IPlatformMapping::probeDeviceRange(std::vector<struct pci> &pci_devs, int domain, int secondary, int subordinate)
+{
+    for (uint8_t bus = secondary; int(bus) <= subordinate; bus++) {
+        for (uint8_t device = 0; device < 32; device++) {
+            for (uint8_t function = 0; function < 8; function++) {
+                struct pci child_dev;
+                child_dev.bdf.domainno = domain;
+                child_dev.bdf.busno = bus;
+                child_dev.bdf.devno = device;
+                child_dev.bdf.funcno = function;
+                if (probe_pci(&child_dev)) {
+                    if (secondary < child_dev.secondary_bus_number && subordinate < child_dev.subordinate_bus_number) {
+                        probeDeviceRange(child_dev.child_pci_devs, domain, child_dev.secondary_bus_number, child_dev.subordinate_bus_number);
+                    }
+                    pci_devs.push_back(child_dev);
+                }
+            }
+        }
+    }
+}
+
 // Mapping for SkyLake Server.
 class PurleyPlatformMapping: public IPlatformMapping {
 private:
@@ -728,7 +794,7 @@ void PurleyPlatformMapping::getUboxBusNumbers(std::vector<uint32_t>& ubox)
                 pci_dev.bdf.devno = device;
                 pci_dev.bdf.funcno = function;
                 if (probe_pci(&pci_dev)) {
-                    if ((pci_dev.vendor_id == PCM_INTEL_PCI_VENDOR_ID) && (pci_dev.device_id == SKX_SOCKETID_UBOX_DID)) {
+                    if (pci_dev.isIntelDevice() && (pci_dev.device_id == SKX_SOCKETID_UBOX_DID)) {
                         ubox.push_back(bus);
                     }
                 }
@@ -819,8 +885,7 @@ bool IPlatformMapping10Nm::getSadIdRootBusMap(uint32_t socket_id, std::map<uint8
                 pci_dev.bdf.busno = (uint8_t)bus;
                 pci_dev.bdf.devno = device;
                 pci_dev.bdf.funcno = function;
-                if (probe_pci(&pci_dev) && (pci_dev.vendor_id == PCM_INTEL_PCI_VENDOR_ID)
-                    && (pci_dev.device_id == SNR_ICX_MESH2IIO_MMAP_DID)) {
+                if (probe_pci(&pci_dev) && pci_dev.isIntelDevice() && (pci_dev.device_id == SNR_ICX_MESH2IIO_MMAP_DID)) {
 
                     PciHandleType h(0, bus, device, function);
                     std::uint32_t sad_ctrl_cfg;
@@ -855,7 +920,7 @@ private:
     const std::string * iio_stack_names;
 public:
     WhitleyPlatformMapping(int cpu_model, uint32_t sockets_count) : IPlatformMapping10Nm(cpu_model, sockets_count),
-        icx_d(PCM::getInstance()->getCPUModelFromCPUID() == PCM::ICX_D),
+        icx_d(PCM::getInstance()->getCPUFamilyModelFromCPUID() == PCM::ICX_D),
         sad_to_pmu_id_mapping(icx_d ? icx_d_sad_to_pmu_id_mapping : icx_sad_to_pmu_id_mapping),
         iio_stack_names(icx_d ? icx_d_iio_stack_names : icx_iio_stack_names)
     {
@@ -1180,7 +1245,7 @@ bool EagleStreamPlatformMapping::setChopValue()
         if (!probe_pci(&pci_dev)) {
             continue;
         }
-        if (!((pci_dev.vendor_id == PCM_INTEL_PCI_VENDOR_ID) && (pci_dev.device_id == SPR_PCU_CR3_DID))) {
+        if (!(pci_dev.isIntelDevice() && (pci_dev.device_id == SPR_PCU_CR3_DID))) {
             continue;
         }
         std::uint32_t capid4;
@@ -1217,7 +1282,7 @@ bool EagleStreamPlatformMapping::getRootBuses(std::map<int, std::map<int, struct
                     if (!probe_pci(&pci_dev)) {
                         break;
                     }
-                    if (!((pci_dev.vendor_id == PCM_INTEL_PCI_VENDOR_ID) && (pci_dev.device_id == SPR_MSM_DEV_ID))) {
+                    if (!(pci_dev.isIntelDevice() && (pci_dev.device_id == SPR_MSM_DEV_ID))) {
                         continue;
                     }
 
@@ -1343,7 +1408,7 @@ bool EagleStreamPlatformMapping::eagleStreamAcceleratorStackProbe(int unit, cons
                 struct pci pci_dev(address.domainno, b, d, f);
 
                 if (probe_pci(&pci_dev)) {
-                    if (pci_dev.vendor_id == PCM_INTEL_PCI_VENDOR_ID) {
+                    if (pci_dev.isIntelDevice()) {
                         switch (pci_dev.device_id) {
                         case DSA_DID:
                             pci_dev.parts_no.push_back(0);
@@ -1441,28 +1506,255 @@ bool EagleStreamPlatformMapping::pciTreeDiscover(std::vector<struct iio_stacks_o
     return true;
 }
 
-void IPlatformMapping::probeDeviceRange(std::vector<struct pci> &pci_devs, int domain, int secondary, int subordinate)
+class LoganvillePlatform: public IPlatformMapping10Nm {
+private:
+    bool loganvillePchDsaPciStackProbe(struct iio_stacks_on_socket& iio_on_socket, int root_bus, int stack_pmon_id);
+    bool loganvilleDlbStackProbe(struct iio_stacks_on_socket& iio_on_socket, int root_bus, int stack_pmon_id);
+    bool loganvilleNacStackProbe(struct iio_stacks_on_socket& iio_on_socket, int root_bus, int stack_pmon_id);
+public:
+    LoganvillePlatform(int cpu_model, uint32_t sockets_count) : IPlatformMapping10Nm(cpu_model, sockets_count) {}
+    ~LoganvillePlatform() = default;
+    bool pciTreeDiscover(std::vector<struct iio_stacks_on_socket>& iios) override;
+};
+
+bool LoganvillePlatform::loganvillePchDsaPciStackProbe(struct iio_stacks_on_socket& iio_on_socket, int root_bus, int stack_pmon_id)
 {
-    for (uint8_t bus = secondary; int(bus) <= subordinate; bus++) {
-        for (uint8_t device = 0; device < 32; device++) {
-            for (uint8_t function = 0; function < 8; function++) {
-                struct pci child_dev;
-                child_dev.bdf.domainno = domain;
-                child_dev.bdf.busno = bus;
-                child_dev.bdf.devno = device;
-                child_dev.bdf.funcno = function;
-                if (probe_pci(&child_dev)) {
-                    if (secondary < child_dev.secondary_bus_number && subordinate < child_dev.subordinate_bus_number) {
-                        probeDeviceRange(child_dev.child_pci_devs, domain, child_dev.secondary_bus_number, child_dev.subordinate_bus_number);
+    struct iio_stack stack;
+    stack.busno = root_bus;
+    stack.iio_unit_id = stack_pmon_id;
+    stack.stack_name = grr_iio_stack_names[stack_pmon_id];
+
+    struct iio_bifurcated_part pch_part;
+    pch_part.part_id = 7;
+    struct pci* pci_dev = &pch_part.root_pci_dev;
+    pci_dev->bdf.busno = root_bus;
+
+    if (probe_pci(pci_dev)) {
+        probeDeviceRange(pch_part.child_pci_devs, pci_dev->bdf.domainno, pci_dev->secondary_bus_number, pci_dev->subordinate_bus_number);
+        stack.parts.push_back(pch_part);
+        iio_on_socket.stacks.push_back(stack);
+        return true;
+    }
+
+    return false;
+}
+
+bool LoganvillePlatform::loganvilleDlbStackProbe(struct iio_stacks_on_socket& iio_on_socket, int root_bus, int stack_pmon_id)
+{
+    struct iio_stack stack;
+    stack.busno = root_bus;
+    stack.iio_unit_id = stack_pmon_id;
+    stack.stack_name = grr_iio_stack_names[stack_pmon_id];
+
+    struct iio_bifurcated_part dlb_part;
+    dlb_part.part_id = GRR_DLB_PART_ID;
+
+    for (uint8_t bus = root_bus; bus < 255; bus++) {
+        struct pci pci_dev(bus, 0x00, 0x00);
+        if (probe_pci(&pci_dev)) {
+            if ((pci_dev.vendor_id == PCM_INTEL_PCI_VENDOR_ID) && (pci_dev.device_id == HQMV25_DID)) {
+                dlb_part.root_pci_dev = pci_dev;
+                // Check Virtual RPs for DLB
+                for (uint8_t device = 0; device < 2; device++) {
+                    for (uint8_t function = 0; function < 8; function++) {
+                        struct pci child_pci_dev(bus, device, function);
+                        if (probe_pci(&child_pci_dev)) {
+                            dlb_part.child_pci_devs.push_back(child_pci_dev);
+                        }
                     }
-                    pci_devs.push_back(child_dev);
+                }
+                stack.parts.push_back(dlb_part);
+                iio_on_socket.stacks.push_back(stack);
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool LoganvillePlatform::loganvilleNacStackProbe(struct iio_stacks_on_socket& iio_on_socket, int root_bus, int stack_pmon_id)
+{
+    struct iio_stack stack;
+    stack.busno = root_bus;
+    stack.iio_unit_id = stack_pmon_id;
+    stack.stack_name = grr_iio_stack_names[stack_pmon_id];
+
+    // Probe NIS
+    {
+        struct iio_bifurcated_part nis_part;
+        nis_part.part_id = GRR_NIS_PART_ID;
+        struct pci pci_dev(root_bus, 0x04, 0x00);
+        if (probe_pci(&pci_dev)) {
+            nis_part.root_pci_dev = pci_dev;
+            for (uint8_t bus = pci_dev.secondary_bus_number; bus <= pci_dev.subordinate_bus_number; bus++) {
+                for (uint8_t device = 0; device < 2; device++) {
+                    for (uint8_t function = 0; function < 8; function++) {
+                            struct pci child_pci_dev(bus, device, function);
+                            if (probe_pci(&child_pci_dev)) {
+                                nis_part.child_pci_devs.push_back(child_pci_dev);
+                            }
+                    }
+                }
+            }
+            stack.parts.push_back(nis_part);
+        }
+    }
+
+    // Probe QAT
+    {
+        struct iio_bifurcated_part qat_part;
+        qat_part.part_id = GRR_QAT_PART_ID;
+        struct pci pci_dev(root_bus, 0x05, 0x00);
+        if (probe_pci(&pci_dev)) {
+            qat_part.root_pci_dev = pci_dev;
+            for (uint8_t bus = pci_dev.secondary_bus_number; bus <= pci_dev.subordinate_bus_number; bus++) {
+                for (uint8_t device = 0; device < 17; device++) {
+                    for (uint8_t function = 0; function < 8; function++) {
+                            struct pci child_pci_dev(bus, device, function);
+                            if (probe_pci(&child_pci_dev)) {
+                                qat_part.child_pci_devs.push_back(child_pci_dev);
+                            }
+                    }
+                }
+            }
+            stack.parts.push_back(qat_part);
+        }
+    }
+
+    iio_on_socket.stacks.push_back(stack);
+    return true;
+}
+
+bool LoganvillePlatform::pciTreeDiscover(std::vector<struct iio_stacks_on_socket>& iios)
+{
+    std::map<uint8_t, uint8_t> sad_id_bus_map;
+    if (!getSadIdRootBusMap(0, sad_id_bus_map)) {
+        return false;
+    }
+
+    if (sad_id_bus_map.size() != grr_sad_to_pmu_id_mapping.size()) {
+        cerr << "Found unexpected number of stacks: " << sad_id_bus_map.size() << ", expected: " << grr_sad_to_pmu_id_mapping.size() << endl;
+        return false;
+    }
+
+    struct iio_stacks_on_socket iio_on_socket;
+    iio_on_socket.socket_id = 0;
+
+    for (auto sad_id_bus_pair = sad_id_bus_map.cbegin(); sad_id_bus_pair != sad_id_bus_map.cend(); ++sad_id_bus_pair) {
+        if (grr_sad_to_pmu_id_mapping.find(sad_id_bus_pair->first) == grr_sad_to_pmu_id_mapping.end()) {
+            cerr << "Cannot map SAD ID to PMON ID. Unknown ID: " << sad_id_bus_pair->first << endl;
+            return false;
+        }
+        int stack_pmon_id = grr_sad_to_pmu_id_mapping.at(sad_id_bus_pair->first);
+        int root_bus = sad_id_bus_pair->second;
+        switch (stack_pmon_id) {
+        case GRR_PCH_DSA_GEN4_PMON_ID:
+            if (!loganvillePchDsaPciStackProbe(iio_on_socket, root_bus, stack_pmon_id)) {
+                return false;
+            }
+            break;
+        case GRR_DLB_PMON_ID:
+            if (!loganvilleDlbStackProbe(iio_on_socket, root_bus, stack_pmon_id)) {
+                return false;
+            }
+            break;
+        case GRR_NIS_QAT_PMON_ID:
+            if (!loganvilleNacStackProbe(iio_on_socket, root_bus, stack_pmon_id)) {
+                return false;
+            }
+            break;
+        default:
+            return false;
+        }
+    }
+
+    std::sort(iio_on_socket.stacks.begin(), iio_on_socket.stacks.end());
+
+    iios.push_back(iio_on_socket);
+
+    return true;
+}
+
+class Xeon6thNextGenPlatform: public IPlatformMapping {
+private:
+    bool getRootBuses(std::map<int, std::map<int, struct bdf>> &root_buses);
+protected:
+    virtual bool stackProbe(int unit, const struct bdf &address, struct iio_stacks_on_socket &iio_on_socket) = 0;
+public:
+    Xeon6thNextGenPlatform(int cpu_model, uint32_t sockets_count) : IPlatformMapping(cpu_model, sockets_count) {}
+    virtual ~Xeon6thNextGenPlatform() = default;
+
+    bool pciTreeDiscover(std::vector<struct iio_stacks_on_socket>& iios) override;
+};
+
+bool Xeon6thNextGenPlatform::getRootBuses(std::map<int, std::map<int, struct bdf>> &root_buses)
+{
+    bool mapped = true;
+    for (uint32_t domain = 0; mapped; domain++) {
+        mapped = false;
+        for (uint16_t b = 0; b < 256; b++) {
+            for (uint8_t d = 0; d < 32; d++) {
+                for (uint8_t f = 0; f < 8; f++) {
+                    struct pci pci_dev(domain, b, d, f);
+                    if (!probe_pci(&pci_dev)) {
+                        break;
+                    }
+                    if (!(pci_dev.isIntelDevice() && (pci_dev.device_id == SPR_MSM_DEV_ID))) {
+                        continue;
+                    }
+
+                    std::uint32_t cpuBusValid;
+                    std::vector<std::uint32_t> cpuBusNo;
+                    int package_id;
+
+                    if (!get_cpu_bus(domain, b, d, f, cpuBusValid, cpuBusNo, package_id)) {
+                        return false;
+                    }
+
+                    for (int cpuBusId = 0; cpuBusId < SPR_MSM_CPUBUSNO_MAX; ++cpuBusId) {
+                        if (!((cpuBusValid >> cpuBusId) & 0x1)) {
+                            cout << "CPU bus " << cpuBusId << " is disabled on package " << package_id << endl;
+                            continue;
+                        }
+                        int rootBus = (cpuBusNo[(int)(cpuBusId / 4)] >> ((cpuBusId % 4) * 8)) & 0xff;
+                        root_buses[package_id][cpuBusId] = bdf(domain, rootBus, 0, 0);
+                        cout << "Mapped CPU bus #" << cpuBusId << " (domain " << domain << " bus " << std::hex << rootBus << std::dec << ")"
+                             << " package " << package_id << endl;
+                        mapped = true;
+                    }
                 }
             }
         }
     }
+    return !root_buses.empty();
 }
 
-class BirchStreamPlatform: public IPlatformMapping {
+bool Xeon6thNextGenPlatform::pciTreeDiscover(std::vector<struct iio_stacks_on_socket>& iios)
+{
+    std::map<int, std::map<int, struct bdf>> root_buses;
+    if (!getRootBuses(root_buses))
+    {
+        return false;
+    }
+
+    for (auto iter = root_buses.cbegin(); iter != root_buses.cend(); ++iter) {
+        auto rbs_on_socket = iter->second;
+        struct iio_stacks_on_socket iio_on_socket;
+        iio_on_socket.socket_id = iter->first;
+        for (auto rb = rbs_on_socket.cbegin(); rb != rbs_on_socket.cend(); ++rb) {
+            if (!stackProbe(rb->first, rb->second, iio_on_socket)) {
+                return false;
+            }
+        }
+        std::sort(iio_on_socket.stacks.begin(), iio_on_socket.stacks.end());
+        iios.push_back(iio_on_socket);
+    }
+
+    return true;
+}
+
+class BirchStreamPlatform: public Xeon6thNextGenPlatform {
 private:
     bool isPcieStack(int unit);
     bool isRootHcStack(int unit);
@@ -1471,13 +1763,11 @@ private:
 
     bool birchStreamPciStackProbe(int unit, const struct bdf &address, struct iio_stacks_on_socket &iio_on_socket);
     bool birchStreamAcceleratorStackProbe(int unit, const struct bdf &address, struct iio_stacks_on_socket &iio_on_socket);
-
-    bool stackProbe(int unit, const struct bdf &address, struct iio_stacks_on_socket &iio_on_socket);
-    bool getRootBuses(std::map<int, std::map<int, struct bdf>> &root_buses);
+protected:
+    bool stackProbe(int unit, const struct bdf &address, struct iio_stacks_on_socket &iio_on_socket) override;
 public:
-    BirchStreamPlatform(int cpu_model, uint32_t sockets_count) : IPlatformMapping(cpu_model, sockets_count) {}
+    BirchStreamPlatform(int cpu_model, uint32_t sockets_count) : Xeon6thNextGenPlatform(cpu_model, sockets_count) {}
     ~BirchStreamPlatform() = default;
-    bool pciTreeDiscover(std::vector<struct iio_stacks_on_socket>& iios) override;
 };
 
 bool BirchStreamPlatform::birchStreamPciStackProbe(int unit, const struct bdf &address, struct iio_stacks_on_socket &iio_on_socket)
@@ -1621,86 +1911,53 @@ bool BirchStreamPlatform::stackProbe(int unit, const struct bdf &address, struct
     return false;
 }
 
-bool BirchStreamPlatform::getRootBuses(std::map<int, std::map<int, struct bdf>> &root_buses)
-{
-    bool mapped = true;
-    for (uint32_t domain = 0; mapped; domain++) {
-        mapped = false;
-        for (uint16_t b = 0; b < 256; b++) {
-            for (uint8_t d = 0; d < 32; d++) {
-                for (uint8_t f = 0; f < 8; f++) {
-                    struct pci pci_dev(domain, b, d, f);
-                    if (!probe_pci(&pci_dev)) {
-                        break;
-                    }
-                    if (!((pci_dev.vendor_id == PCM_INTEL_PCI_VENDOR_ID) && (pci_dev.device_id == SPR_MSM_DEV_ID))) {
-                        continue;
-                    }
-
-                    std::uint32_t cpuBusValid;
-                    std::vector<std::uint32_t> cpuBusNo;
-                    int package_id;
-
-                    if (get_cpu_bus(domain, b, d, f, cpuBusValid, cpuBusNo, package_id) == false) {
-                        return false;
-                    }
-
-                    for (int cpuBusId = 0; cpuBusId < SPR_MSM_CPUBUSNO_MAX; ++cpuBusId) {
-                        if (!((cpuBusValid >> cpuBusId) & 0x1)) {
-                            cout << "CPU bus " << cpuBusId << " is disabled on package " << package_id << endl;
-                            continue;
-                        }
-                        int rootBus = (cpuBusNo[(int)(cpuBusId / 4)] >> ((cpuBusId % 4) * 8)) & 0xff;
-                        root_buses[package_id][cpuBusId] = bdf(domain, rootBus, 0, 0);
-                        cout << "Mapped CPU bus #" << cpuBusId << " (domain " << domain << " bus " << std::hex << rootBus << std::dec << ")"
-                             << " package " << package_id << endl;
-                        mapped = true;
-                    }
-                }
-            }
-        }
-    }
-    return !root_buses.empty();
-}
-
-bool BirchStreamPlatform::pciTreeDiscover(std::vector<struct iio_stacks_on_socket>& iios)
-{
-    std::map<int, std::map<int, struct bdf>> root_buses;
-    if (!getRootBuses(root_buses))
+class KasseyvillePlatform: public Xeon6thNextGenPlatform {
+private:
+    bool stackProbe(int unit, const struct bdf &address, struct iio_stacks_on_socket &iio_on_socket);
+    bool isUboxStack(int unit)
     {
-        return false;
+        return SRF_UBOXA_SAD_BUS_ID == unit || SRF_UBOXB_SAD_BUS_ID == unit;
     }
+public:
+    KasseyvillePlatform(int cpu_model, uint32_t sockets_count) : Xeon6thNextGenPlatform(cpu_model, sockets_count) {}
+    ~KasseyvillePlatform() = default;
+};
 
-    for (auto iter = root_buses.cbegin(); iter != root_buses.cend(); ++iter) {
-        auto rbs_on_socket = iter->second;
-        struct iio_stacks_on_socket iio_on_socket;
-        iio_on_socket.socket_id = iter->first;
-        for (auto rb = rbs_on_socket.cbegin(); rb != rbs_on_socket.cend(); ++rb) {
-            if (!stackProbe(rb->first, rb->second, iio_on_socket)) {
-                return false;
-            }
-        }
-        std::sort(iio_on_socket.stacks.begin(), iio_on_socket.stacks.end());
-        iios.push_back(iio_on_socket);
-    }
+bool KasseyvillePlatform::stackProbe(int unit, const struct bdf &address, struct iio_stacks_on_socket &iio_on_socket)
+{
+    // Skip UBOX buses
+    if (isUboxStack(unit)) return true;
 
+    // To suppress compilation warning
+    (void)address;
+
+    struct iio_stack stack;
+    stack.iio_unit_id = unit;
+    stack.stack_name = generate_stack_str(unit);
+    iio_on_socket.stacks.push_back(stack);
     return true;
 }
 
-std::unique_ptr<IPlatformMapping> IPlatformMapping::getPlatformMapping(int cpu_model, uint32_t sockets_count)
+std::unique_ptr<IPlatformMapping> IPlatformMapping::getPlatformMapping(int cpu_family_model, uint32_t sockets_count)
 {
-    switch (cpu_model) {
+    switch (cpu_family_model) {
     case PCM::SKX:
-        return std::unique_ptr<IPlatformMapping>{new PurleyPlatformMapping(cpu_model, sockets_count)};
+        return std::unique_ptr<IPlatformMapping>{new PurleyPlatformMapping(cpu_family_model, sockets_count)};
     case PCM::ICX:
-        return std::unique_ptr<IPlatformMapping>{new WhitleyPlatformMapping(cpu_model, sockets_count)};
+        return std::unique_ptr<IPlatformMapping>{new WhitleyPlatformMapping(cpu_family_model, sockets_count)};
     case PCM::SNOWRIDGE:
-        return std::unique_ptr<IPlatformMapping>{new JacobsvillePlatformMapping(cpu_model, sockets_count)};
+        return std::unique_ptr<IPlatformMapping>{new JacobsvillePlatformMapping(cpu_family_model, sockets_count)};
     case PCM::SPR:
     case PCM::EMR:
-        return std::unique_ptr<IPlatformMapping>{new EagleStreamPlatformMapping(cpu_model, sockets_count)};
+        return std::unique_ptr<IPlatformMapping>{new EagleStreamPlatformMapping(cpu_family_model, sockets_count)};
+    case PCM::GRR:
+        return std::unique_ptr<IPlatformMapping>{new LoganvillePlatform(cpu_family_model, sockets_count)};
     case PCM::SRF:
-        return std::unique_ptr<IPlatformMapping>{new BirchStreamPlatform(cpu_model, sockets_count)};
+    case PCM::GNR:
+        return std::unique_ptr<IPlatformMapping>{new BirchStreamPlatform(cpu_family_model, sockets_count)};
+    case PCM::GNR_D:
+        std::cerr << "Warning: Only initial support (without attribution to PCIe devices) for Graniterapids-D is provided" << std::endl;
+        return std::unique_ptr<IPlatformMapping>{new KasseyvillePlatform(cpu_family_model, sockets_count)};
     default:
         return nullptr;
     }
@@ -1708,16 +1965,19 @@ std::unique_ptr<IPlatformMapping> IPlatformMapping::getPlatformMapping(int cpu_m
 
 ccr* get_ccr(PCM* m, uint64_t& ccr)
 {
-    switch (m->getCPUModel())
+    switch (m->getCPUFamilyModel())
     {
         case PCM::SKX:
-            return new skx_ccr(ccr);
+            return new pcm::ccr(ccr, ccr::ccr_type::skx);
         case PCM::ICX:
         case PCM::SNOWRIDGE:
         case PCM::SPR:
         case PCM::EMR:
+        case PCM::GRR:
         case PCM::SRF:
-            return new icx_ccr(ccr);
+        case PCM::GNR:
+        case PCM::GNR_D:
+            return new pcm::ccr(ccr, ccr::ccr_type::icx);
         default:
             cerr << m->getCPUFamilyModelString() << " is not supported! Program aborted" << endl;
             exit(EXIT_FAILURE);
@@ -1974,7 +2234,7 @@ int mainThrows(int argc, char * argv[])
     PCIDB pciDB;
     load_PCIDB(pciDB);
 
-    auto mapping = IPlatformMapping::getPlatformMapping(m->getCPUModel(), m->getNumSockets());
+    auto mapping = IPlatformMapping::getPlatformMapping(m->getCPUFamilyModel(), m->getNumSockets());
     if (!mapping) {
         cerr << "Failed to discover pci tree: unknown platform" << endl;
         exit(EXIT_FAILURE);
@@ -2000,7 +2260,7 @@ int mainThrows(int argc, char * argv[])
     string ev_file_name;
     if (m->IIOEventsAvailable())
     {
-        ev_file_name = "opCode-" + std::to_string(m->getCPUModel()) + ".txt";
+        ev_file_name = "opCode-" + std::to_string(m->getCPUFamily()) + "-" + std::to_string(m->getInternalCPUModel()) + ".txt";
     }
     else
     {
@@ -2037,7 +2297,7 @@ int mainThrows(int argc, char * argv[])
     catch (std::exception & e)
     {
         std::cerr << "Error info:" << e.what() << "\n";
-        std::cerr << "Event configure file have the problem and cause the program exit, please double check it!\n";
+        std::cerr << "The event configuration file (" << ev_file_name << ") cannot be loaded. Please verify the file. Exiting.\n";
         exit(EXIT_FAILURE);
     }
 

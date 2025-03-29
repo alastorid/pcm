@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Copyright (c) 2022, Intel Corporation
+# Copyright (c) 2022-2025, Intel Corporation
 
 cmake_minimum_required(VERSION 3.5)
 
@@ -7,13 +7,13 @@ project(PCM)
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
-# set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 
-option(PCM_NO_ASAN "Disable address sanitizer" OFF)
+option(PCM_NO_ASAN "Disable address sanitizer" ON)
 option(PCM_FUZZ "Enable fuzzing" OFF)
 option(PCM_BUILD_EXECUTABLES "Build PCM utilities" ON)
-option(PCM_NO_STATIC_LIBASAN OFF)
+option(PCM_NO_STATIC_LIBASAN "Disable static address sanitizer library" ON)
 
 if(MSVC)
     option(PCM_NO_STATIC_MSVC_RUNTIME_LIBRARY "Disable using static runtime under MSVC" OFF)
@@ -64,7 +64,7 @@ if(UNIX)  # APPLE, LINUX, FREE_BSD
     message(STATUS "initial CMAKE_C_FLAGS: ${CMAKE_C_FLAGS}")
 
     # required PCM common flags
-    set (PCM_COMMON_FLAGS "-Wno-unknown-pragmas -fPIC -DCMAKE_INSTALL_PREFIX=\"${CMAKE_INSTALL_PREFIX}\"")
+    set (PCM_COMMON_FLAGS "-Wno-unknown-pragmas -DCMAKE_INSTALL_PREFIX=\"${CMAKE_INSTALL_PREFIX}\"")
 
     if(LINUX)
        set (PCM_COMMON_FLAGS "${PCM_COMMON_FLAGS} -Wextra -DPCM_USE_PERF")
@@ -77,7 +77,7 @@ if(UNIX)  # APPLE, LINUX, FREE_BSD
        endif()
 
        if(NOT DEFINED LINUX_SYSTEMD_UNITDIR)
-           set(LINUX_SYSTEMD_UNITDIR /usr/lib/systemd/system)
+         set(LINUX_SYSTEMD_UNITDIR "${CMAKE_INSTALL_LIBDIR}/systemd/system")
        endif()
 
        if(LINUX_SYSTEMD)
@@ -100,6 +100,10 @@ if(UNIX)  # APPLE, LINUX, FREE_BSD
          set (PCM_DYNAMIC "-rdynamic")
     elseif()
          set (PCM_DYNAMIC "")
+    endif()
+    if(APPLE)
+       set(PCM_NO_ASAN ON)
+       message(STATUS "AddressSanitizer is currently disabled on MacOS")
     endif()
     if(PCM_NO_ASAN)
         message(STATUS "AddressSanitizer is disabled")
@@ -141,7 +145,32 @@ if(PCM_FUZZ)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${FUZZER_OPTIONS}")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${FUZZER_OPTIONS}")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${FUZZER_OPTIONS}")
+    message(STATUS "CMAKE_C_FLAGS: ${CMAKE_C_FLAGS}")
+    message(STATUS "CMAKE_CXX_FLAGS: ${CMAKE_CXX_FLAGS}")
+    message(STATUS "CMAKE_EXE_LINKER_FLAGS: ${CMAKE_EXE_LINKER_FLAGS}")
 endif(PCM_FUZZ)
+
+#######################
+# pugixml dependency
+#######################
+
+add_library(PCM_PUGIXML INTERFACE) # interface library for pugixml
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/pugixml/src/pugixml.cpp")
+    message(STATUS "Local pugixml exists: ${CMAKE_CURRENT_SOURCE_DIR}/src/pugixml/src/pugixml.cpp")
+    set(PCM_PUGIXML_CPP ${CMAKE_CURRENT_SOURCE_DIR}/src/pugixml/src/pugixml.cpp)
+    add_compile_options(-DPCM_PUGIXML_AVAILABLE)
+else()
+    message(STATUS "Local pugixml doesn't exist")
+#    message(WARNING
+#        " ${CMAKE_CURRENT_SOURCE_DIR}/src/pugixml/src/pugixml.cpp doesn't exist\n"
+#        " Use `git clone --recursive` flag when cloning pcm repository to clone pugixml submodule as well or\n"
+#        " update submodule with command 'git submodule update --init --recursive' or\n"
+#        " run 'git clone https//github.com/zeux/pugixml.git' in 'src' directory to get pugixml library")
+endif()
+
+#######################
+# End of pugixml dependency section
+#######################
 
 #######################
 # Install

@@ -29,6 +29,8 @@ extern char ** environ;
 #include <glob.h>
 #endif
 
+#include "debug.h"
+
 namespace pcm {
 
 
@@ -44,6 +46,41 @@ bool isInKeepList(const StringType& varName, const std::vector<StringType>& keep
         }
     }
     return false;
+}
+
+void setDefaultDebugLevel()
+{
+    auto strDebugLevel = pcm::safe_getenv("PCM_DEBUG_LEVEL");
+    if (strDebugLevel.empty() == false)
+    {
+        auto intDebugLevel = std::stoi(strDebugLevel);
+        debug::dyn_debug_level(intDebugLevel);
+        DBG(0, "Debug level set to ", intDebugLevel);
+    }
+}
+
+void getMCFGRecords(std::vector<MCFGRecord>& mcfg)
+{
+#ifdef __linux__
+    mcfg = PciHandleMM::getMCFGRecords();
+#else
+    MCFGRecord segment;
+    segment.startBusNumber = 0;
+    segment.endBusNumber = 0xff;
+    auto maxSegments = 1;
+#if defined (_MSC_VER) || defined(__FreeBSD__) || defined(__DragonFly__)
+    switch (PCM::getCPUFamilyModelFromCPUID())
+    {
+    case PCM::GNR:
+        maxSegments = 4;
+        break;
+    }
+#endif
+    for (segment.PCISegmentGroupNumber = 0; segment.PCISegmentGroupNumber < maxSegments; ++(segment.PCISegmentGroupNumber))
+    {
+        mcfg.push_back(segment);
+    }
+#endif
 }
 
 #if defined(_MSC_VER)
@@ -114,7 +151,12 @@ void exit_cleanup(void)
     }
 }
 
+
+#ifdef _MSC_VER
 bool colorEnabled = false;
+#else
+bool colorEnabled = true;
+#endif
 
 void setColorEnabled(bool value)
 {
@@ -330,16 +372,11 @@ void sigINT_handler(int signum)
     }
 }
 
-/**
- * \brief handles SIGSEGV signals that lead to termination of the program
- * this function specifically works when the client application launched
- * by pcm -- terminates
- */
 constexpr auto BACKTRACE_MAX_STACK_FRAME = 30;
-void sigSEGV_handler(int signum)
+void printBacktrace()
 {
-    void *backtrace_buffer[BACKTRACE_MAX_STACK_FRAME] = {0};
-    char **backtrace_strings = NULL;
+    void* backtrace_buffer[BACKTRACE_MAX_STACK_FRAME] = { 0 };
+    char** backtrace_strings = NULL;
     size_t backtrace_size = 0;
 
     backtrace_size = backtrace(backtrace_buffer, BACKTRACE_MAX_STACK_FRAME);
@@ -357,7 +394,16 @@ void sigSEGV_handler(int signum)
         }
         freeAndNullify(backtrace_strings);
     }
+}
 
+/**
+ * \brief handles SIGSEGV signals that lead to termination of the program
+ * this function specifically works when the client application launched
+ * by pcm -- terminates
+ */
+void sigSEGV_handler(int signum)
+{
+    printBacktrace();
     sigINT_handler(signum);
 }
 
@@ -800,7 +846,7 @@ int calibratedSleep(const double delay, const char* sysCmd, const MainLoop& main
     {
         if (delay_ms > 0)
         {
-            // std::cerr << "DEBUG: sleeping for " << std::dec << delay_ms << " ms...\n";
+            DBG(1, "sleeping for " , std::dec , delay_ms , " ms...");
             MySleepMs(delay_ms);
         }
     }
@@ -812,16 +858,31 @@ int calibratedSleep(const double delay, const char* sysCmd, const MainLoop& main
 
 void print_help_force_rtm_abort_mode(const int alignment, const char * separator)
 {
-    const auto m = PCM::getInstance();
-    if (m->isForceRTMAbortModeAvailable() && (m->getMaxCustomCoreEvents() < 4))
+    if (PCM::isForceRTMAbortModeAvailable() == false)
     {
-        std::cout << "  -force-rtm-abort-mode";
-        for (int i = 0; i < (alignment - 23); ++i)
+        return;
+    }
+    try
+    {
+        const auto m = PCM::getInstance();
+        if (m->getMaxCustomCoreEvents() < 4)
         {
-            std::cout << " ";
+            std::cout << "  -force-rtm-abort-mode";
+            for (int i = 0; i < (alignment - 23); ++i)
+            {
+                std::cout << " ";
+            }
+            assert(separator);
+            std::cout << separator << " force RTM transaction abort mode to enable more programmable counters\n";
         }
-        assert(separator);
-        std::cout << separator << " force RTM transaction abort mode to enable more programmable counters\n";
+    }
+    catch (std::exception & e)
+    {
+        std::cerr << "ERROR: " << e.what() << "\n";
+    }
+    catch (...)
+    {
+        std::cerr << "ERROR: Unknown exception caught in print_help_force_rtm_abort_mode\n";
     }
 }
 
@@ -1018,6 +1079,7 @@ bool isRegisterEvent(const std::string & pmu)
     if (pmu == "mmio"
        || pmu == "pcicfg"
        || pmu == "pmt"
+       || pmu == "tpmi"
        || pmu == "package_msr"
        || pmu == "thread_msr")
     {
@@ -1199,7 +1261,7 @@ int load_events(const std::string &fn, std::map<std::string, uint32_t> &ofm,
                         nameMap[h_name] = nameMap_value;
                     }
                     ctr.h_id = (uint32_t)nameMap.size() - 1;
-                    //cout << "h_name:" << ctr.h_event_name << "h_id: "<< ctr.h_id << "\n";
+                    DBG(2, "h_name:" , ctr.h_event_name , "h_id: ", ctr.h_id);
                     break;
                 case PCM::V_EVENT_NAME:
                     {
@@ -1211,7 +1273,7 @@ int load_events(const std::string &fn, std::map<std::string, uint32_t> &ofm,
                         if (v_nameMap.find(v_name) == v_nameMap.end())
                         {
                             v_nameMap[v_name] = (unsigned int)v_nameMap.size() - 1;
-                            //cout << "v_name(" << v_name << ")="<< v_nameMap[v_name] << "\n";
+                            DBG(2, "v_name(" , v_name , ")=", v_nameMap[v_name]);
                         }
                         else
                         {
@@ -1220,7 +1282,7 @@ int load_events(const std::string &fn, std::map<std::string, uint32_t> &ofm,
                             throw std::invalid_argument(err_msg);
                         }
                         ctr.v_id = (uint32_t)v_nameMap.size() - 1;
-                        //cout << "h_name:" << ctr.h_event_name << ",hid=" << ctr.h_id << ",v_name:" << ctr.v_event_name << ",v_id: "<< ctr.v_id << "\n";
+                        DBG(2, "h_name:" , ctr.h_event_name , ",hid=" , ctr.h_id , ",v_name:" , ctr.v_event_name , ",v_id: ", ctr.v_id);
                         break;
                     }
                 //TODO: double type for multiplier. drop divider variable
@@ -1245,7 +1307,7 @@ int load_events(const std::string &fn, std::map<std::string, uint32_t> &ofm,
             }
         }
 
-        //std::cout << "Finish parsing: " << line << "\n";
+        DBG(2, "Finished parsing: " , line);
         if (pfn_evtcb(EVT_LINE_COMPLETE, evtcb_ctx, ctr, ofm, "", 0))
         {
             in.close();
@@ -1269,7 +1331,7 @@ int load_events(const std::string &fn, std::map<std::string, uint32_t> &ofm,
 
 bool get_cpu_bus(uint32 msmDomain, uint32 msmBus, uint32 msmDev, uint32 msmFunc, uint32 &cpuBusValid, std::vector<uint32> &cpuBusNo, int &cpuPackageId)
 {
-    //std::cout << "get_cpu_bus: d=" << std::hex << msmDomain << ",b=" << msmBus << ",d=" << msmDev << ",f=" << msmFunc << std::dec << " \n";
+    DBG(2, "get_cpu_bus: d=" , std::hex , msmDomain , ",b=" , msmBus , ",d=" , msmDev , ",f=" , msmFunc , std::dec );
     try
     {
         PciHandleType h(msmDomain, msmBus, msmDev, msmFunc);
@@ -1421,7 +1483,7 @@ bool readMapFromSysFS(const char * path, std::unordered_map<std::string, uint32>
         std::istringstream iss2(value);
         iss2 >> std::setbase(0) >> numValue;
         result.insert(std::pair<std::string, uint32>(key, numValue));
-        //std::cerr << "readMapFromSysFS:" << key << "=" << numValue << ".\n";
+        DBG(3, "readMapFromSysFS:" , key , "=" , numValue , ".");
     }
 
     fclose(f);

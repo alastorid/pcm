@@ -91,6 +91,7 @@ void print_usage(const string & progname)
 
 bool verbose = false;
 double defaultDelay = 1.0; // in seconds
+TelemetryDB telemDB;
 
 PCM::RawEventConfig initCoreConfig()
 {
@@ -222,7 +223,9 @@ bool initPMUEventMap()
     if (!in.is_open())
     {
         cerr << "ERROR: File " << mapfilePath << " can't be open. \n";
-        cerr << "       Download it from https://raw.githubusercontent.com/intel/perfmon/main/" << mapfile << " \n";
+        cerr << "       Use -ep <pcm_source_directory>/perfmon option if you cloned PCM source repository recursively with submodules,\n";
+        cerr << "       or run 'git clone https://github.com/intel/perfmon' to download the perfmon event repository and use -ep <perfmon_directory> option\n";
+        cerr << "       or download the file from https://raw.githubusercontent.com/intel/perfmon/main/" << mapfile << " \n";
         return false;
     }
     int32 FMSPos = -1;
@@ -556,7 +559,7 @@ AddEventStatus addEventFromDB(PCM::RawPMUConfigs& curPMUConfigs, string fullEven
     {
         try
         {
-            path = std::string("PMURegisterDeclarations/") + pcm->getCPUFamilyModelString(pcm->getCPUFamily(), pcm->getCPUModel(), (uint32)stepping) + ".json";
+            path = std::string("PMURegisterDeclarations/") + pcm->getCPUFamilyModelString(pcm->getCPUFamily(), pcm->getInternalCPUModel(), (uint32)stepping) + ".json";
 
             std::ifstream in(path);
             if (!in.is_open())
@@ -971,6 +974,37 @@ AddEventStatus addEvent(PCM::RawPMUConfigs & curPMUConfigs, string eventStr)
     }
     const auto configArray = split(configStr, ',');
     bool fixed = false;
+    std::string lookup;
+    auto pmtAddRecord = [&lookup, &pmuName, &config](const std::vector<TelemetryDB::PMTRecord> & records) -> AddEventStatus
+    {
+        if (pmuName == "pmt")
+        {
+                if (records.empty())
+                {
+                    cerr << "ERROR: lookup \"" << lookup << "\" not found in PMT telemetry database\n";
+                    return AddEventStatus::Failed;
+                }
+                if (records.size() > 1)
+                {
+                    cerr << "ERROR: lookup \"" << lookup << "\" is ambiguous in PMT telemetry database\n\n";
+                    for (const auto & record : records)
+                    {
+                        cerr << "  ";
+                        record.print(cerr);
+                        cerr << "\n";
+                    }
+                    return AddEventStatus::Failed;
+                }
+                config.second = records[0].fullName;
+                assert(records.size() == 1);
+                config.first[PCM::PMTEventPosition::UID] = records[0].uid;
+                config.first[PCM::PMTEventPosition::offset] = records[0].qWordOffset;
+                config.first[PCM::PMTEventPosition::type] = (records[0].sampleType == "Snapshot") ? PCM::MSRType::Static : PCM::MSRType::Freerun;
+                config.first[PCM::PMTEventPosition::lsb] = records[0].lsb;
+                config.first[PCM::PMTEventPosition::msb] = records[0].msb;
+        }
+        return AddEventStatus::OK;
+    };
     for (const auto & item : configArray)
     {
         if (match(item, "config=", &config.first[0]))
@@ -1005,6 +1039,16 @@ AddEventStatus addEvent(PCM::RawPMUConfigs & curPMUConfigs, string eventStr)
         {
             // matched and initialized name
             if (check_for_injections(config.second))
+                return AddEventStatus::Failed;
+        }
+        else if (pcm_sscanf(item) >> s_expect("lookup=") >> setw(255) >> lookup)
+        {
+            if (pmtAddRecord(telemDB.lookup(lookup)) != AddEventStatus::OK)
+                return AddEventStatus::Failed;
+        }
+        else if (pcm_sscanf(item) >> s_expect("ilookup=") >> setw(255) >> lookup)
+        {
+            if (pmtAddRecord(telemDB.ilookup(lookup)) != AddEventStatus::OK)
                 return AddEventStatus::Failed;
         }
         else if (item == "fixed")
@@ -1227,6 +1271,15 @@ std::string getMSREventString(const uint64 & index, const std::string & type, co
 {
     std::stringstream c;
     c << type << "/MSR 0x" << std::hex << index << "/" << getTypeString(msrType);
+    return c.str();
+}
+
+std::string getTPMIEventString(const PCM::RawEventEncoding & eventEnc, const std::string& type)
+{
+    std::stringstream c;
+    c << type << "/TPMI_ID 0x" << std::hex << eventEnc[PCM::TPMIEventPosition::ID]
+              << "/offset 0x" << eventEnc[PCM::TPMIEventPosition::offset] << "/"
+        << getTypeString(eventEnc[PCM::TPMIEventPosition::type]);
     return c.str();
 }
 
@@ -1645,6 +1698,10 @@ void printTransposed(const PCM::RawPMUConfigs& curPMUConfigs,
             else if (type == "package_msr")
             {
                 printMSRRows(MSRScope::Package);
+            }
+            else if (type == "tpmi")
+            {
+                printRegisterRows(getTPMIEventString, getTPMIEvent);
             }
             else if (type == "pcicfg")
             {
@@ -2070,6 +2127,10 @@ void print(const PCM::RawPMUConfigs& curPMUConfigs,
         {
             printRegisters(getPCICFGEventString, getPCICFGEvent);
         }
+        else if (type == "tpmi")
+        {
+            printRegisters(getTPMIEventString, getTPMIEvent);
+        }
         else if (type == "mmio")
         {
             printRegisters(getMMIOEventString, getMMIOEvent);
@@ -2340,6 +2401,8 @@ int mainThrows(int argc, char * argv[])
     bool forceRTMAbortMode = false;
     bool reset_pmu = false;
     PCM* m = PCM::getInstance();
+
+    telemDB.loadFromXML("Intel-PMT");
 
     parsePID(argc, argv, pid);
 

@@ -12,11 +12,11 @@ permissions:
 jobs:
   build:
 
-    runs-on: macos-12
+    runs-on: ubuntu-24.04
 
     steps:
     - name: Harden Runner
-      uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40a3d6 # v2.8.1
+      uses: step-security/harden-runner@446798f8213ac2e75931c1b0769676d927801858 # v2.10.0
       with:
         egress-policy: audit
 
@@ -25,13 +25,17 @@ jobs:
         submodules: recursive
     - name: clang scan build in FreeBSD VM
       id: clang-scan-build
-      uses: cross-platform-actions/action@a4a7327f8112bc2513a07701786a0c3c1193583a # v0.23.0
+      uses: cross-platform-actions/action@cdc9ee69ef84a5f2e59c9058335d9c57bcb4ac86 # v0.25.0
       with:
         memory: 2048
         shell: sh
         operating_system: freebsd
-        version: '13.2'
+        version: '14.1'
         run: |
+          sudo mkdir -p /usr/local/etc/pkg/repos
+          sudo sh -c 'echo "FreeBSD: { url: \"https://pkg.FreeBSD.org/\${ABI}/quarterly\", mirror_type: \"srv\", enabled: yes }" > /usr/local/etc/pkg/repos/FreeBSD.conf'
+          sudo pkg update -f
+          sudo pkg upgrade -y
           sudo pkg install -y curl gmake cmake devel/llvm llvm
           pwd
           ls -lah
