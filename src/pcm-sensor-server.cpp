@@ -1367,7 +1367,7 @@ public:
     virtual void run() = 0;
 
 private:
-    int initializeServerSocket() {
+    int initializeServerSocketv6() {
         if ( port_ == 0 )
             throw std::runtime_error( "Server Constructor: No port specified." );
 
@@ -1402,6 +1402,66 @@ private:
             }
         }
         socklen_t len = sizeof( struct sockaddr_in6 );
+        retval = ::bind( sockfd, reinterpret_cast<struct sockaddr*>(&serv), len );
+        if ( 0 != retval ) {
+            DBG( 3, "close clientsocketFD" );
+            ::close( sockfd );
+            throw std::runtime_error( std::string("Server Constructor: Cannot bind to port ") + std::to_string(port_) );
+        }
+
+        retval = listen( sockfd, 64 );
+        if ( 0 != retval ) {
+            DBG( 3, "close clientsocketFD" );
+            ::close( sockfd );
+            throw std::runtime_error( "Server Constructor: Cannot listen on socket" );
+        }
+        // Here everything should be fine, return socket fd
+        return sockfd;
+    }
+    int initializeServerSocket() {
+        if ( port_ == 0 )
+            throw std::runtime_error( "Server Constructor: No port specified." );
+
+        try
+        {
+            return initializeServerSocketv6();
+        }
+        catch( std::exception& e )
+        {
+            DBG( 3, "initializeServerSocketv6 failed, let's try v4." );
+        }
+
+#ifdef _MSC_VER
+        WSADATA wsaData = { 0 };
+        auto result = ::WSAStartup(MAKEWORD(2, 2), &wsaData);
+        if (result != 0) {
+            throw std::runtime_error("WSAStartup failed: " + std::to_string(result));
+        }
+#endif
+        int sockfd = ::socket( AF_INET, SOCK_STREAM, 0 );
+        if ( -1 == sockfd )
+            throw std::runtime_error( "Server Constructor: Can't create socket"
+#ifdef _MSC_VER
+                 + (" WSAGetLastError=" + std::to_string(WSAGetLastError()))
+#endif
+            );
+
+        int retval = 0;
+
+        struct sockaddr_in serv;
+        serv.sin_family = AF_INET;
+        serv.sin_port = htons( port_ );
+        if ( listenIP_.empty() )
+            serv.sin_addr.s_addr = INADDR_ANY;
+        else {
+            if ( 1 != ::inet_pton( AF_INET, listenIP_.c_str(), &(serv.sin_addr) ) )
+            {
+                DBG( 3, "close clientsocketFD" );
+                ::close(sockfd);
+                throw std::runtime_error( "Server Constructor: Cannot convert IP string" );
+            }
+        }
+        socklen_t len = sizeof( struct sockaddr_in );
         retval = ::bind( sockfd, reinterpret_cast<struct sockaddr*>(&serv), len );
         if ( 0 != retval ) {
             DBG( 3, "close clientsocketFD" );
